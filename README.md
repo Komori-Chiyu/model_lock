@@ -64,9 +64,10 @@ target\release\modelock-client.exe activate --server http://你的服务器:8787
 target\release\modelock-client.exe mount --vkit 模型-买家.vkit
 ```
 
-> VTS 只通过 Steam 分发，但官方自带 `start_without_steam.bat`（即 `VTube Studio.exe -nosteam`）。
-> 客户端默认直接以该方式拉起 VTS（代价仅是 VNet 多人功能不可用）；需要 Steam 功能时可用
-> `steam://rungameid/1325860` 启动后由客户端轮询授权。
+> VTS 只通过 Steam 分发。客户端**强制走 Steam 启动**：调用 `steam.exe -applaunch 1325860`，
+> 然后轮询监听新出现的 `VTube Studio.exe` 进程，仅当它的父进程是 `steam.exe` 时才授权挂载
+> （手动双击或 `-nosteam` 直启的实例不会被授权）。VNet 等 Steam 功能因此保持可用。
+> 开发调试可用 `--launch-mode nosteam` 直启。
 
 ## 安全边界（务必阅读）
 

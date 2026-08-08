@@ -206,8 +206,8 @@ flowchart LR
 
 1. **VTS 只通过 Steam 分发，但下载后可以不经过 Steam 启动**：官方自带 `start_without_steam.bat`，实际就是直接运行 `VTube Studio.exe -nosteam`（VVON 客户端文档也确认该参数）。
 2. **免 Steam 启动的代价**：VNet 多人功能不可用；其余（模型加载、webcam/手机追踪、插件 API）正常。“去水印” DLC 需要至少用 Steam 启动一次，之后该电脑上离线也可用。
-3. 因此锁客户端采用：**先挂载 Dokan 卷（VTS 模型目录），再直接 CreateProcess 拉起 `VTube Studio.exe -nosteam`**。VTS 启动扫描 `StreamingAssets\Live2DModels` 时就能看到挂载的模型目录。
-4. 若用户必须使用 Steam 功能，备选方案：通过 `steam://rungameid/1325860` 或 `steam.exe -applaunch 1325860` 让 Steam 启动，客户端轮询 `tasklist /FI "IMAGENAME eq VTube Studio.exe"` 拿到 PID 后授权（本项目 `client/src/vts.rs` 已提供 `authorize_pid` 与 `find_vts`，支持运行中进程/Steam 注册表/多库路径发现）。
+3. 因此锁客户端采用：**先挂载 Dokan 卷（VTS 模型目录），再通过 Steam 启动 VTS**（`steam.exe -applaunch 1325860`）。VTS 启动扫描 `StreamingAssets\Live2DModels` 时就能看到挂载的模型目录。
+4. **Steam 启动强制校验（已实现）**：客户端先快照现有 VTS PID 集合，触发 Steam 启动后轮询监听**新出现**的 `VTube Studio.exe` 进程；只有**父进程映像为 steam.exe** 的新实例才会被授权（`parent_is_steam`，排除手动双击与 `-nosteam` 直启）。已存在的旧实例一律不授权。`--launch-mode nosteam` 仅保留给开发调试。
 5. **进程身份与回收**：
    - 客户端 `CREATE_SUSPENDED` 创建进程 → 分配 Job（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）→ `ResumeThread`；关闭 Job 句柄即杀整棵进程树（卸载必杀 VTS，不留解密态）。
    - 授权判据 = **PID + 持有的进程句柄**：每次 I/O 校验请求 PID 等于已授权 PID，且 `GetProcessId(已持有句柄) == PID`。VTS 退出后句柄失效，PID 被系统复用时无法冒充。

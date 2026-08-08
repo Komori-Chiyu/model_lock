@@ -28,7 +28,8 @@ fn usage() {
          \n\
          init      --vreq-out <file>\n\
          activate  --server <url> --code <CODE>\n\
-         mount     --vkit <file.vkit> [--vts <VTube Studio.exe>] [--server <url>]"
+         mount     --vkit <file.vkit> [--vts <VTube Studio.exe>] [--server <url>]\n\
+                   [--launch-mode steam|nosteam]   (default: steam)"
     );
 }
 
@@ -93,6 +94,7 @@ fn cmd_mount(args: &[String]) -> Result<()> {
     let vkit_path = arg_value(args, "--vkit").context("--vkit is required")?;
     let vts_override = arg_value(args, "--vts");
     let server_override = arg_value(args, "--server");
+    let launch_mode = arg_value(args, "--launch-mode").unwrap_or_else(|| "steam".to_string());
 
     let mut state = auth::load_state()?.context("not activated; run `activate` first")?;
     if let Some(server) = server_override {
@@ -109,13 +111,12 @@ fn cmd_mount(args: &[String]) -> Result<()> {
         pkg.total_protected_bytes()
     );
 
+    // Mount point: VTS model directory (created before VTS starts).
     let vts_exe = match vts_override {
         Some(p) => PathBuf::from(p),
         None => vts::find_vts()?,
     };
     log::info!("VTS executable: {}", vts_exe.display());
-
-    // Mount point: VTS model directory (created before VTS starts).
     let model_id = sanitize_model_id(&pkg.header.model_id);
     let mount_point = vts_exe
         .parent()
@@ -150,12 +151,23 @@ fn cmd_mount(args: &[String]) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Dokan mount failed: {e}"))?;
     log::info!("volume mounted");
 
-    // Launch VTS inside a kill-on-close job, then authorize its PID+handle.
-    let vts_proc = vts::launch_vts(&vts_exe, &[])?;
+    // Launch VTS. Default (and enforced) mode: via Steam, then monitor for the
+    // newly spawned VTS process and only authorize it when its parent is
+    // steam.exe. `nosteam` remains for development only.
+    let vts_proc = if launch_mode == "nosteam" {
+        log::warn!("launching VTS with -nosteam (dev mode; Steam features unavailable)");
+        vts::launch_vts_nosteam(&vts_exe)?
+    } else {
+        let existing = vts::collect_vts_pids();
+        vts::request_steam_launch()?;
+        println!("launching VTube Studio via Steam (app {}), waiting for it to start...", vts::STEAM_APPID);
+        let found = vts::wait_for_steam_vts(&existing, 120)?;
+        vts::adopt_vts(found.pid, found.handle)?
+    };
     let auth_handle = vts::duplicate_handle(vts_proc.process_handle)?;
     fs.authorize_vts(vts_proc.pid, auth_handle);
     println!(
-        "mounted model '{}' and launched VTS (pid={}); press Ctrl+C or close VTS to unmount",
+        "mounted model '{}' and authorized VTS pid={}; press Ctrl+C or close VTS to unmount",
         model_id, vts_proc.pid
     );
 
