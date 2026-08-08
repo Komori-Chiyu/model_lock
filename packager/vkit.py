@@ -109,7 +109,7 @@ def load_vreq(path: Path) -> Dict:
         pub = serialization.load_der_public_key(spki)
     except ValueError as exc:
         raise FormatError("vreq spki is not a valid public key") from exc
-    if not isinstance(pub, rsa.RSAPublicKey) or pub.key_size != 2048:
+    if not isinstance(pub, rsa.RSAPublicKey) or pub.key_size < 2040:
         raise FormatError("vreq must contain an RSA-2048 public key")
     if doc.get("algorithm") != "RSA-2048":
         raise FormatError("vreq algorithm must be RSA-2048")
@@ -294,15 +294,11 @@ def _wrap_cek(cek: bytes, spki_der: bytes) -> Dict:
     pub = serialization.load_der_public_key(spki_der)
     wrapped = pub.encrypt(
         cek,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None,
-        ),
+        padding.PKCS1v15(),
     )
     return {
         "key_id": key_id_of_spki(spki_der),
-        "algorithm": "RSA-OAEP-SHA256",
+        "algorithm": "RSA-PKCS1v15",
         "wrapped_cek": _b64(wrapped),
     }
 

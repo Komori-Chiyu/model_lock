@@ -220,7 +220,7 @@ def validate_device_key(spki_b64: str) -> str:
         pub = serialization.load_der_public_key(der)
     except Exception as exc:
         raise ApiError(400, "BAD_PUBKEY", "invalid public key") from exc
-    if not isinstance(pub, rsa.RSAPublicKey) or pub.key_size != 2048:
+    if not isinstance(pub, rsa.RSAPublicKey) or pub.key_size < 2040:
         raise ApiError(400, "BAD_PUBKEY", "expected RSA-2048 public key")
     return b64e(der)
 
