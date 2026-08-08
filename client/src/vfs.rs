@@ -31,7 +31,7 @@ pub const VOLUME_FUSE_FACTOR: u64 = 3;
 
 pub struct AuthorizedVts {
     pub pid: u32,
-    pub handle: HANDLE,
+    pub handle: usize,
 }
 
 struct Budgets {
@@ -89,7 +89,9 @@ fn default_security_descriptor() -> &'static Vec<u8> {
         {
             return Vec::new();
         }
-        let len = winapi::um::securitybaseapi::GetSecurityDescriptorLength(sd);
+        let len = winapi::um::securitybaseapi::GetSecurityDescriptorLength(
+            sd as *mut winapi::ctypes::c_void,
+        ) as usize;
         let mut out = vec![0u8; len];
         std::ptr::copy_nonoverlapping(sd as *const u8, out.as_mut_ptr(), len);
         winapi::um::winbase::LocalFree(sd as winapi::shared::minwindef::HLOCAL);
@@ -114,7 +116,10 @@ impl ModelFs {
     }
 
     pub fn authorize_vts(&self, pid: u32, handle: HANDLE) {
-        *self.auth.write().unwrap() = Some(AuthorizedVts { pid, handle });
+        *self.auth.write().unwrap() = Some(AuthorizedVts {
+            pid,
+            handle: handle as usize,
+        });
     }
 
     pub fn deauthorize(&self) {
@@ -126,10 +131,11 @@ impl ModelFs {
         let Some(a) = guard.as_ref() else {
             return false;
         };
-        if a.pid != pid || a.handle.is_null() {
+        let handle = a.handle as HANDLE;
+        if handle.is_null() {
             return false;
         }
-        let real_pid = unsafe { winapi::um::processthreadsapi::GetProcessId(a.handle) };
+        let real_pid = unsafe { winapi::um::processthreadsapi::GetProcessId(handle) };
         real_pid == pid
     }
 
@@ -249,7 +255,13 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for ModelFs {
             file.blocks.len() as u64,
             buffer.len() as u64,
         )?;
-        let data = self.pkg.read_range(file_idx, offset, buffer.len() as u64)?;
+        let data = self
+            .pkg
+            .read_range(file_idx, offset, buffer.len() as u64)
+            .map_err(|e| {
+                log::warn!("read_range failed: {e}");
+                STATUS_DATA_ERROR
+            })?;
         buffer[..data.len()].copy_from_slice(&data);
         Ok(data.len() as u32)
     }
@@ -482,7 +494,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for ModelFs {
         &'h self,
         _file_name: &U16CStr,
         _security_information: u32,
-        security_descriptor: *mut winnt::SECURITY_DESCRIPTOR,
+        security_descriptor: *mut winapi::ctypes::c_void,
         buffer_length: u32,
         _info: &OperationInfo<'c, 'h, Self>,
         _context: &'c Self::Context,
@@ -505,7 +517,8 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for ModelFs {
         &'h self,
         _file_name: &U16CStr,
         _security_information: u32,
-        _security_descriptor: *mut winnt::SECURITY_DESCRIPTOR,
+        _security_descriptor: *mut winapi::ctypes::c_void,
+        _buffer_length: u32,
         _info: &OperationInfo<'c, 'h, Self>,
         _context: &'c Self::Context,
     ) -> OperationResult<()> {

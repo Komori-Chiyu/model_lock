@@ -150,7 +150,7 @@ fn cmd_mount(args: &[String]) -> Result<()> {
             flags: MountFlags::ALT_STREAM,
             ..Default::default()
         };
-        let mut mounter = FileSystemMounter::new(&mount_fs, &mount_mp, &options);
+        let mut mounter = FileSystemMounter::new(&*mount_fs, &mount_mp, &options);
         match mounter.mount() {
             Ok(_volume) => log::info!("volume unmounted"),
             Err(e) => log::error!("Dokan mount failed: {e}"),
