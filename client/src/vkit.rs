@@ -52,6 +52,7 @@ pub struct Recipient {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct License {
+    pub model_id: String,
     pub key_id: String,
     pub code_hash: String,
     #[serde(default)]
@@ -310,6 +311,9 @@ pub fn verify_package_license(
         .license
         .as_ref()
         .context("package has no offline license")?;
+    if lic.model_id != header.model_id {
+        bail!("license is bound to a different model");
+    }
     if !lic.key_id.eq_ignore_ascii_case(device_key_id) {
         bail!("license is bound to a different device key");
     }

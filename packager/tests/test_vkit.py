@@ -171,6 +171,13 @@ class VkitTests(unittest.TestCase):
         verify_author(header, spki)  # must not raise
         lic = verify_license(header, self.vreq["key_id"], code)
         self.assertEqual(lic["code_hash"], hashlib.sha256(code.encode()).hexdigest())
+        self.assertEqual(lic["model_id"], "test")
+        # model mismatch must be rejected
+        bad = dict(header.license)
+        bad["model_id"] = "other-model"
+        header.license = bad
+        with self.assertRaises(VkitError):
+            verify_license(header, self.vreq["key_id"], code)
         with self.assertRaises(VkitError):
             verify_license(header, self.vreq["key_id"], "WRONG-CODE")
         with self.assertRaises(VkitError):

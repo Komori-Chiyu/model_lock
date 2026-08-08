@@ -370,6 +370,7 @@ def pack_model(
             except LedgerError as exc:
                 raise VkitError(str(exc)) from exc
         license_doc = {
+            "model_id": model_id,
             "key_id": key_id,
             "code_hash": hashlib.sha256(code.encode("utf-8")).hexdigest(),
             "expires_at": expires_at,
@@ -502,6 +503,8 @@ def verify_license(header: PackageHeader, device_key_id: str, code: Optional[str
     lic = header.license
     if lic is None:
         raise VkitError("package has no license")
+    if str(lic.get("model_id", "")) != header.model_id:
+        raise VkitError("license is bound to a different model")
     if str(lic.get("key_id", "")).lower() != device_key_id.lower():
         raise VkitError("license is bound to a different device key")
     if code is None:

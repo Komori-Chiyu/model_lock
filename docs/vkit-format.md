@@ -41,6 +41,7 @@
     }
   ],
   "license": {
+    "model_id": "模型ID",
     "key_id": "买家公钥指纹",
     "code_hash": "sha256(激活码) hex",
     "expires_at": "2027-12-31（可选）",
