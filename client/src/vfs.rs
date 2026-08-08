@@ -79,19 +79,17 @@ fn default_security_descriptor() -> &'static Vec<u8> {
     static SD: OnceLock<Vec<u8>> = OnceLock::new();
     SD.get_or_init(|| unsafe {
         let sddl = widestring::U16CString::from_str("D:(A;;GA;;;WD)").unwrap();
-        let mut sd: *mut winnt::SECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut sd: *mut winapi::ctypes::c_void = std::ptr::null_mut();
         if winapi::shared::sddl::ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.as_ptr(),
-            winapi::shared::sddl::SDDL_REVISION_1,
+            winapi::shared::sddl::SDDL_REVISION_1 as u32,
             &mut sd,
             std::ptr::null_mut(),
         ) == 0
         {
             return Vec::new();
         }
-        let len = winapi::um::securitybaseapi::GetSecurityDescriptorLength(
-            sd as *mut winapi::ctypes::c_void,
-        ) as usize;
+        let len = winapi::um::securitybaseapi::GetSecurityDescriptorLength(sd) as usize;
         let mut out = vec![0u8; len];
         std::ptr::copy_nonoverlapping(sd as *const u8, out.as_mut_ptr(), len);
         winapi::um::winbase::LocalFree(sd as winapi::shared::minwindef::HLOCAL);
