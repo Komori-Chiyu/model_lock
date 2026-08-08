@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Result};
 use base64::Engine;
-use widestring::{U16CStr, U16CString, U16String, U16Str};
+use widestring::{U16CString, U16Str};
 
 pub fn to_utf16(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()

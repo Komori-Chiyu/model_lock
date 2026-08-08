@@ -123,15 +123,14 @@ impl ModelFs {
 
     fn check_authorized(&self, pid: u32) -> bool {
         let guard = self.auth.read().unwrap();
-        match guard.as_ref() {
-            None => false,
-            Some(a) => {
-                if a.pid != pid || a.handle.is_null() {
-                    return false;
-                }
-                unsafe { winapi::um::processthreadsapi::GetProcessId(a.handle) } == pid
-            }
+        let Some(a) = guard.as_ref() else {
+            return false;
+        };
+        if a.pid != pid || a.handle.is_null() {
+            return false;
         }
+        let real_pid = unsafe { winapi::um::processthreadsapi::GetProcessId(a.handle) };
+        real_pid == pid
     }
 
     fn normalize(path: &str) -> String {
@@ -530,5 +529,3 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for ModelFs {
         Ok(())
     }
 }
-
-#[allow(dead_code)]

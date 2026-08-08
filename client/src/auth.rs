@@ -94,7 +94,7 @@ fn read_machine_guid() -> std::io::Result<String> {
 }
 
 fn read_computer_name() -> std::io::Result<String> {
-    use winapi::um::sysinfoapi::GetComputerNameW;
+    use winapi::um::winbase::GetComputerNameW;
     unsafe {
         let mut buf = [0u16; 64];
         let mut len = buf.len() as u32;
