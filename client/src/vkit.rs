@@ -12,8 +12,8 @@ use anyhow::{bail, Context, Result};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use rsa::pkcs8::DecodePublicKey;
 use rsa::pss::{Signature, VerifyingKey};
-use rsa::signature::{SignatureEncoding, Verifier};
-use serde::Deserialize;
+use rsa::signature::Verifier;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
@@ -27,7 +27,7 @@ use crate::util;
 pub const BLOCK_SIZE: u64 = 1024 * 1024;
 pub const CACHE_LIMIT: usize = 32 * 1024 * 1024;
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BlockMeta {
     pub i: u64,
     pub n: String, // base64 nonce (12 bytes)
@@ -35,7 +35,7 @@ pub struct BlockMeta {
     pub l: u64,    // plaintext length
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FileMeta {
     pub path: String,
     pub size: u64,
@@ -43,14 +43,14 @@ pub struct FileMeta {
     pub blocks: Vec<BlockMeta>,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Recipient {
     pub key_id: String,
     pub algorithm: String,
     pub wrapped_cek: String,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct License {
     pub key_id: String,
     pub code_hash: String,
@@ -60,7 +60,7 @@ pub struct License {
     pub note: String,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Header {
     pub magic: String,
     pub version: u32,
@@ -72,6 +72,10 @@ pub struct Header {
     pub note: String,
     #[serde(default)]
     pub license: Option<License>,
+    #[serde(default)]
+    pub author_public_key: Option<String>,
+    #[serde(default)]
+    pub author_signature: Option<String>,
 }
 
 pub fn open_header(path: &Path) -> Result<(Header, u64)> {
@@ -281,7 +285,7 @@ pub fn verify_package_license(
     device_key_id: &str,
     code: Option<&str>,
 ) -> Result<()> {
-    let pub_der = header
+    let pub_der_b64 = header
         .author_public_key
         .as_deref()
         .context("package is not signed by an author")?;
@@ -289,10 +293,11 @@ pub fn verify_package_license(
         .author_signature
         .as_deref()
         .context("package is not signed by an author")?;
+    let pub_der = util::b64d(pub_der_b64).context("invalid author key encoding")?;
     if pub_der != author_spki {
         bail!("package signed by an unexpected author key");
     }
-    let public_key = rsa::RsaPublicKey::from_public_key_der(pub_der)
+    let public_key = rsa::RsaPublicKey::from_public_key_der(&pub_der)
         .context("invalid author public key")?;
     let verifying = VerifyingKey::<Sha256>::new(public_key);
     let signature = Signature::try_from(util::b64d(sig_b64)?.as_slice())

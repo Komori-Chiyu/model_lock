@@ -14,12 +14,11 @@ use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
 use std::ptr;
 use winapi::ctypes::c_void;
-use winapi::shared::bcrypt::BCRYPT_OAEP_PADDING_INFO;
 use winapi::shared::ntdef::LPCWSTR;
 use winapi::shared::winerror::NTE_EXISTS;
 use winapi::um::ncrypt::{
     NCryptFreeObject, NCryptOpenStorageProvider, NCryptSetProperty, NCRYPT_KEY_HANDLE,
-    NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG, SECURITY_STATUS,
+    NCRYPT_PROV_HANDLE, SECURITY_STATUS,
 };
 
 use crate::util;

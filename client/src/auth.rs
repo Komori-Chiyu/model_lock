@@ -193,6 +193,7 @@ pub fn activate(server: &str, code: &str, key: &DeviceKey) -> Result<ClientState
         server: server.to_string(),
         token,
         device_id,
+        ..Default::default()
     })
 }
 

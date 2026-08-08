@@ -21,8 +21,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use widestring::U16CString;
 
-use crate::auth::ClientState;
-use crate::util;
 use rsa::pkcs8::DecodePublicKey;
 
 fn usage() {
@@ -127,7 +125,7 @@ fn cmd_mount(args: &[String]) -> Result<()> {
         } else {
             Some(code_arg.context("this package requires an activation code: pass --code <CODE>")?)
         };
-        vkit::verify_package_license(&pkg.header, &author_spki, &key.key_id, code)?;
+        vkit::verify_package_license(&pkg.header, &author_spki, &key.key_id, code.as_deref())?;
         if code.is_some() {
             auth::accept_license(&mut state, &pkg.header.model_id, &lic.code_hash)?;
             state = auth::load_state()?.unwrap_or_default();
