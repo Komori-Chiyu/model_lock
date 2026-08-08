@@ -35,6 +35,7 @@ pub struct AuthorizedVts {
 }
 
 struct Budgets {
+    // Bytes read per (file, block); limit is block size * PER_FILE_BLOCK_FACTOR.
     per_block: Mutex<HashMap<(usize, u64), u64>>,
     volume_read: Mutex<u64>,
     volume_fuse: u64,
@@ -53,21 +54,40 @@ impl Budgets {
 
     /// Returns Err(STATUS_DATA_ERROR) when a file's reread budget is exceeded,
     /// or Err(STATUS_ACCESS_DENIED) when the volume fuse has tripped.
-    fn charge(&self, file_idx: usize, block_idx: u64, block_count: u64, bytes: u64) -> OperationResult<()> {
+    ///
+    /// The per-block budget is in BYTES (limit = block size * factor), not read
+    /// calls: Unity/Cubism read large files in small chunks (32 KiB), so a
+    /// read-call limit would trip on a single legitimate sequential scan.
+    fn charge(
+        &self,
+        file_idx: usize,
+        block_idx: u64,
+        block_bytes: u64,
+        bytes: u64,
+    ) -> OperationResult<()> {
         if self.sticky.load(Ordering::Relaxed) {
+            log::warn!("volume fuse tripped (sticky)");
             return Err(STATUS_ACCESS_DENIED);
         }
         let mut per = self.per_block.lock().unwrap();
         let key = (file_idx, block_idx);
-        let count = per.entry(key).or_insert(0);
-        *count += 1;
-        let limit = block_count.saturating_mul(PER_FILE_BLOCK_FACTOR);
-        if *count > limit {
+        let read = per.entry(key).or_insert(0);
+        *read = read.saturating_add(bytes);
+        let limit = block_bytes.saturating_mul(PER_FILE_BLOCK_FACTOR);
+        if *read > limit {
+            log::warn!(
+                "per-block reread budget exceeded: file={file_idx} block={block_idx} read_bytes={read} limit_bytes={limit}"
+            );
             return Err(STATUS_DATA_ERROR);
         }
         let mut total = self.volume_read.lock().unwrap();
         *total = total.saturating_add(bytes);
         if *total > self.volume_fuse {
+            log::warn!(
+                "volume fuse tripped: read={} fuse={}",
+                *total,
+                self.volume_fuse
+            );
             self.sticky.store(true, Ordering::Relaxed);
             return Err(STATUS_ACCESS_DENIED);
         }
@@ -138,7 +158,11 @@ impl ModelFs {
     }
 
     fn normalize(path: &str) -> String {
-        path.trim_start_matches('\\').trim_start_matches('/').to_string()
+        // Callers may pass Windows-style ("\dir\file") or NT-style ("/dir/file")
+        // separators; the package stores POSIX paths, so fold both to '/'.
+        path.trim_start_matches('\\')
+            .trim_start_matches('/')
+            .replace('\\', "/")
     }
 
     fn is_dir(&self, path: &str) -> bool {
@@ -247,12 +271,19 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for ModelFs {
         }
         let block_size = self.pkg.header.block_size.max(1);
         let block_idx = offset / block_size;
-        self.budgets.charge(
-            file_idx,
-            block_idx,
-            file.blocks.len() as u64,
-            buffer.len() as u64,
-        )?;
+        // Budget a block by its own size: a 2.5 MiB file's first 1 MiB block
+        // must tolerate a full sequential 32 KiB-chunk scan (32 reads).
+        let block_bytes = file
+            .blocks
+            .iter()
+            .find(|b| b.i == block_idx)
+            .map(|b| b.l.max(1))
+            .unwrap_or(block_size);
+        // Charge for bytes actually deliverable (request may exceed a short
+        // file's tail), so a 487-byte file read via a 32 KiB buffer isn't
+        // over-billed.
+        let charge_bytes = ((file.size.saturating_sub(offset)) as u64).min(buffer.len() as u64);
+        self.budgets.charge(file_idx, block_idx, block_bytes, charge_bytes)?;
         let data = self
             .pkg
             .read_range(file_idx, offset, buffer.len() as u64)
@@ -260,6 +291,13 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for ModelFs {
                 log::warn!("read_range failed: {e}");
                 STATUS_DATA_ERROR
             })?;
+        log::debug!(
+            "read_file {} off={} req={} got={}",
+            file.path,
+            offset,
+            buffer.len(),
+            data.len()
+        );
         buffer[..data.len()].copy_from_slice(&data);
         Ok(data.len() as u32)
     }
