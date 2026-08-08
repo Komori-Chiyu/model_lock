@@ -40,10 +40,16 @@ jobs:
           Start-Process -Wait -FilePath $out -ArgumentList '/S'
         continue-on-error: true
       - name: Cargo check
-        run: cargo check --locked
+        shell: pwsh
+        run: |
+          cargo check --locked 2>&1 | Tee-Object -FilePath check.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Cargo build (release)
-        run: cargo build --release --locked
+        shell: pwsh
         continue-on-error: true
+        run: |
+          cargo build --release --locked 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Windows client
         uses: actions/upload-artifact@v4
         if: always()
@@ -51,3 +57,24 @@ jobs:
           name: modelock-client-windows-x64
           path: client/target/release/modelock-client.exe
         continue-on-error: true
+      - name: Report Windows build errors
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = 'Windows client build failed:\n';
+            for (const f of ['client/check.log', 'client/build.log']) {
+              try {
+                const log = fs.readFileSync(f, 'utf8');
+                body += '### ' + f + '\n```\n' + log.slice(-16000) + '\n```\n';
+              } catch (e) {}
+            }
+            if (body !== 'Windows client build failed:\n') {
+              await github.rest.repos.createCommitComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: context.sha,
+                body
+              });
+            }
