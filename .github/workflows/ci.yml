@@ -23,6 +23,9 @@ jobs:
 
   windows-client:
     runs-on: windows-latest
+    permissions:
+      contents: write
+      issues: write
     defaults:
       run:
         working-directory: client
@@ -63,14 +66,22 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let body = 'Windows client build failed:\n';
+            let body = 'Windows client build failed on `' + context.sha.slice(0, 7) + '`:\n';
             for (const f of ['client/check.log', 'client/build.log']) {
               try {
                 const log = fs.readFileSync(f, 'utf8');
                 body += '### ' + f + '\n```\n' + log.slice(-16000) + '\n```\n';
               } catch (e) {}
             }
-            if (body !== 'Windows client build failed:\n') {
+            if (body === 'Windows client build failed on `' + context.sha.slice(0, 7) + '`:\n') return;
+            try {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: 'Windows client build failed (' + context.sha.slice(0, 7) + ')',
+                body
+              });
+            } catch (e) {
               await github.rest.repos.createCommitComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
