@@ -25,7 +25,10 @@
 | `server/` | 授权服务器（Python 标准库 + SQLite + HMAC 令牌） | 任意（Linux 已测） |
 | `client/` | 买家客户端（Rust：CNG 密钥、Dokan 挂载、VTS 拉起/授权） | Windows 10/11 x64 |
 | `docs/vkit-format.md` | `.vkit` 二进制格式规范 | — |
+| `docs/windows-test-guide.md` | Windows 本机测试指南 | — |
 | `model-lock-security-design.md` | 完整方案设计文档 | — |
+
+Windows 客户端实测步骤见 [docs/windows-test-guide.md](docs/windows-test-guide.md)。
 
 ## 快速开始（Linux 上可完整验证的部分）
 
