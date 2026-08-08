@@ -1,0 +1,32 @@
+[package]
+name = "modelock-client"
+version = "0.1.0"
+edition = "2021"
+description = "ModelLock buyer client: activate, decrypt .vkit on demand, mount for VTube Studio"
+
+[dependencies]
+dokan = "0.3.1"
+dokan-sys = "0.3.1"
+winapi = { version = "0.3", features = [
+    "std", "bcrypt", "errhandlingapi", "fileapi", "handleapi", "jobapi2",
+    "libloaderapi", "minwinbase", "minwindef", "ntdef", "ntsecapi", "ntstatus",
+    "processenv", "processthreadsapi", "profileapi", "securitybaseapi",
+    "synchapi", "tlhelp32", "sysinfoapi", "winbase", "winerror", "winnt", "winreg",
+    "winnls", "winsvc", "winuser",
+] }
+widestring = "0.4.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2.10", features = ["tls"] }
+ring = "0.17"
+base64 = "0.22"
+sha2 = "0.10"
+hex = "0.4"
+ctrlc = "3.4"
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+
+[profile.release]
+lto = true
+strip = true

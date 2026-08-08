@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+client/target/
+*.db
+*.db-wal
+*.db-shm
+*.vkit
+.state.json

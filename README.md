@@ -1,0 +1,75 @@
+# ModelLock —— 更强 VTS 模型锁（完整实现）
+
+激活码授权 + 一人一码一设备 + 密码学绑定的加密包 + Dokan 按需解密挂载。
+
+## 架构
+
+```
+┌────────────┐   .vreq(买家公钥)   ┌──────────────┐
+│ 买家客户端  │ ──────────────────▶ │ 画师端打包器  │
+│ (Windows)  │ ◀────────────────── │ (Python)     │
+└─────┬──────┘      .vkit          └──────┬───────┘
+      │                                   │ 模型目录
+      │ 激活码/设备绑定/令牌               ▼
+      ▼                            ┌──────────────┐
+┌─────────────┐   /api/*          │ 授权服务器     │
+│ 授权服务器   │ ◀────────────────  │ (stdlib+SQLite)│
+└─────────────┘                   └──────────────┘
+```
+
+## 目录
+
+| 目录 | 内容 | 平台 |
+|---|---|---|
+| `packager/` | 画师端打包工具（Python，`.vkit` 加密包） | 任意（Linux 已测） |
+| `server/` | 授权服务器（Python 标准库 + SQLite + HMAC 令牌） | 任意（Linux 已测） |
+| `client/` | 买家客户端（Rust：CNG 密钥、Dokan 挂载、VTS 拉起/授权） | Windows 10/11 x64 |
+| `docs/vkit-format.md` | `.vkit` 二进制格式规范 | — |
+| `model-lock-security-design.md` | 完整方案设计文档 | — |
+
+## 快速开始（Linux 上可完整验证的部分）
+
+依赖：Python 3.10+，`pip install cryptography`（测试不需要额外包）。
+
+```bash
+# 1. 打包工具 + 服务器单元测试
+python3 -m unittest packager.tests.test_vkit server.tests.test_server -v
+
+# 2. 端到端：发码 → 买家激活 → 打包 → 解密还原
+python3 tests/e2e.py
+```
+
+## 端到端流程
+
+1. 买家运行客户端 `init --vreq-out VVON-授权请求.vreq`，导出公钥请求文件；
+2. 画师运行 `python3 -m packager.cli pack --model-dir 模型目录 --vreq 买家.vreq --output 模型-买家.vkit --author-key author.pem`；
+3. 服务器管理员生成激活码：`POST /api/admin/codes`（见 `server/server.py` 或测试）；
+4. 买家输入激活码：`modelock-client activate --server http://127.0.0.1:8787 --code ML-XXXX`；
+5. 买家加载：`modelock-client mount --vkit 模型-买家.vkit`，客户端挂载虚拟盘、拉起 VTS、只授权这个 VTS 实例读取；卸载即杀 VTS。
+
+## Windows 客户端编译与运行
+
+```powershell
+# 前提：Rust MSVC 工具链、Dokan SDK（https://dokan-dev.github.io）
+cd client
+cargo build --release
+
+# 首次使用：生成设备密钥（CNG/KSP，私钥不可导出）并导出请求文件
+target\release\modelock-client.exe init --vreq-out 授权请求.vreq
+
+# 激活（把请求文件发给画师，等 .vkit 回来）
+target\release\modelock-client.exe activate --server http://你的服务器:8787 --code ML-XXXX
+
+# 挂载并启动 VTS
+target\release\modelock-client.exe mount --vkit 模型-买家.vkit
+```
+
+> VTS 只通过 Steam 分发，但官方自带 `start_without_steam.bat`（即 `VTube Studio.exe -nosteam`）。
+> 客户端默认直接以该方式拉起 VTS（代价仅是 VNet 多人功能不可用）；需要 Steam 功能时可用
+> `steam://rungameid/1325860` 启动后由客户端轮询授权。
+
+## 安全边界（务必阅读）
+
+- 本实现的目标是抬高门槛：防随手转发（`.vkit` 绑定买家公钥，转发无效）、防扒包工具（读取预算 + 目录枚举拒绝）、防共享激活码（服务端绑定设备）。
+- 无法防住“完全控制本机”的专业攻击者：模型渲染时内存/显存中必然存在明文。
+- 客户端（`client/`）需在 Windows 上编译与实测；本仓库在 Linux 环境完成了打包器、服务器和端到端流程的验证。
