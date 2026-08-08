@@ -10,7 +10,7 @@ dokan-sys = "0.3.1"
 winapi = { version = "0.3", features = [
     "std", "bcrypt", "errhandlingapi", "fileapi", "handleapi", "jobapi2",
     "libloaderapi", "ncrypt", "minwinbase", "minwindef", "ntdef", "ntsecapi", "ntstatus",
-    "processenv", "processthreadsapi", "profileapi", "securitybaseapi",
+    "processenv", "processthreadsapi", "profileapi", "securitybaseapi", "sddl",
     "synchapi", "tlhelp32", "sysinfoapi", "winbase", "winerror", "winnt", "winreg",
     "winnls", "winsvc", "winuser",
 ] }

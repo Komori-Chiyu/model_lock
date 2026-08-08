@@ -11,13 +11,13 @@
 
 use dokan::{
     CreateFileInfo, DiskSpaceInfo, FileInfo, FileSystemHandler, FileTimeOperation,
-    FillDataResult, FindData, FindStreamData, MountOptions, OperationInfo, OperationResult,
+    FillDataResult, FindData, FindStreamData, OperationInfo, OperationResult,
     VolumeInfo,
 };
 use dokan_sys::win32::{
     FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use widestring::{U16CStr, U16CString, U16String};
@@ -80,9 +80,9 @@ fn default_security_descriptor() -> &'static Vec<u8> {
     SD.get_or_init(|| unsafe {
         let sddl = widestring::U16CString::from_str("D:(A;;GA;;;WD)").unwrap();
         let mut sd: *mut winnt::SECURITY_DESCRIPTOR = std::ptr::null_mut();
-        if winapi::um::securitybaseapi::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        if winapi::shared::sddl::ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.as_ptr(),
-            winnt::SDDL_REVISION_1,
+            winapi::shared::sddl::SDDL_REVISION_1,
             &mut sd,
             std::ptr::null_mut(),
         ) == 0

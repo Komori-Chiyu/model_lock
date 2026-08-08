@@ -144,7 +144,7 @@ fn cmd_mount(args: &[String]) -> Result<()> {
     let mount_fs = fs.clone();
     let mount_mp = mount_point_w.clone();
     let mount_thread = std::thread::spawn(move || {
-        unsafe { dokan::init() };
+        dokan::init();
         let options = MountOptions {
             single_thread: false,
             flags: MountFlags::ALT_STREAM,
@@ -155,7 +155,7 @@ fn cmd_mount(args: &[String]) -> Result<()> {
             Ok(_volume) => log::info!("volume unmounted"),
             Err(e) => log::error!("Dokan mount failed: {e}"),
         }
-        unsafe { dokan::shutdown() };
+        dokan::shutdown();
     });
     // Give Dokan a moment to mount before VTS scans the model directory.
     std::thread::sleep(std::time::Duration::from_millis(1500));
