@@ -121,7 +121,7 @@ pub fn open_or_create() -> Result<DeviceKey> {
                 NCryptSetProperty(
                     key,
                     len_prop.as_ptr(),
-                    &size as *const u32 as *const u8,
+                    &size as *const u32 as *mut u8,
                     std::mem::size_of::<u32>() as u32,
                     0,
                 ),
@@ -134,7 +134,7 @@ pub fn open_or_create() -> Result<DeviceKey> {
                 NCryptSetProperty(
                     key,
                     usage_prop.as_ptr(),
-                    &usage as *const u32 as *const u8,
+                    &usage as *const u32 as *mut u8,
                     std::mem::size_of::<u32>() as u32,
                     0,
                 ),
@@ -147,7 +147,7 @@ pub fn open_or_create() -> Result<DeviceKey> {
                 NCryptSetProperty(
                     key,
                     export_prop.as_ptr(),
-                    &no_export as *const u32 as *const u8,
+                    &no_export as *const u32 as *mut u8,
                     std::mem::size_of::<u32>() as u32,
                     0,
                 ),

@@ -92,7 +92,7 @@ fn default_security_descriptor() -> &'static Vec<u8> {
         let len = winapi::um::securitybaseapi::GetSecurityDescriptorLength(sd);
         let mut out = vec![0u8; len];
         std::ptr::copy_nonoverlapping(sd as *const u8, out.as_mut_ptr(), len);
-        winapi::um::winbase::LocalFree(sd as winapi::um::winnt::HLOCAL);
+        winapi::um::winbase::LocalFree(sd as winapi::shared::minwindef::HLOCAL);
         out
     })
 }
