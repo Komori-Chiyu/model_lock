@@ -42,6 +42,29 @@ python3 -m unittest packager.tests.test_vkit server.tests.test_server -v
 python3 tests/e2e.py
 ```
 
+## 离线验证模式（推荐，无需服务器）
+
+1. 画师生成作者密钥并导出公钥文件：
+   ```bash
+   python3 -m packager.cli gen-key --output author.pem
+   python3 -m packager.cli export-author-key --key author.pem --output author.spki
+   ```
+2. 买家运行客户端 `init` 导出 `.vreq` 发给画师；
+3. 画师为该买家发激活码（本地台账，绑定买家 key_id）：
+   ```bash
+   python3 -m packager.cli gen-code --model-id 小樱 --key-id <买家key_id> --note 阿花
+   ```
+4. 画师打包（许可声明随包签名）：
+   ```bash
+   python3 -m packager.cli pack --model-dir 模型目录 --vreq 买家.vreq \
+     --output 小樱-阿花.vkit --author-key author.pem --code ML-XXXX --expires 2027-12-31
+   ```
+5. 买家首次使用：`trust-author --file author.spki`，然后 `mount --vkit 小樱-阿花.vkit --code ML-XXXX`；
+   之后同一模型再次 mount 不再需要输码（本地已缓存许可）。
+
+> 全程无服务器参与：作者签名 + 买家公钥封装 CEK + 激活码哈希绑定 key_id，
+> “一人一码”在密码学层面成立。原 server/ 目录保留为可选的在线模式。
+
 ## 端到端流程
 
 1. 买家运行客户端 `init --vreq-out VVON-授权请求.vreq`，导出公钥请求文件；

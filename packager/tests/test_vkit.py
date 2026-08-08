@@ -146,6 +146,54 @@ class VkitTests(unittest.TestCase):
         (self.root / "r.vreq").write_text(json.dumps(self.vreq))
         self.assertEqual(load_vreq(self.root / "r.vreq")["key_id"], self.vreq["key_id"])
 
+    def test_offline_license(self):
+        import hashlib
+        from packager.ledger import Ledger
+        from packager.vkit import verify_license, VkitError
+
+        author = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        ledger_path = self.root / "ledger.db"
+        led = Ledger(ledger_path)
+        codes = led.gen_codes("test", self.vreq["key_id"], note="阿花")
+        code = codes[0]
+
+        pkg = self._pack(
+            author_private_key=author,
+            code=code,
+            expires_at="2099-12-31",
+            ledger_path=ledger_path,
+        )
+        header, _ = read_header(pkg)
+        spki = author.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        verify_author(header, spki)  # must not raise
+        lic = verify_license(header, self.vreq["key_id"], code)
+        self.assertEqual(lic["code_hash"], hashlib.sha256(code.encode()).hexdigest())
+        with self.assertRaises(VkitError):
+            verify_license(header, self.vreq["key_id"], "WRONG-CODE")
+        with self.assertRaises(VkitError):
+            verify_license(header, "other-key-id", code)
+
+    def test_expired_license_rejected(self):
+        from packager.ledger import Ledger
+        from packager.vkit import verify_license, VkitError
+
+        author = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        ledger_path = self.root / "ledger2.db"
+        led = Ledger(ledger_path)
+        code = led.gen_codes("test", self.vreq["key_id"])[0]
+        pkg = self._pack(
+            author_private_key=author,
+            code=code,
+            expires_at="2000-01-01",
+            ledger_path=ledger_path,
+        )
+        header, _ = read_header(pkg)
+        with self.assertRaises(VkitError):
+            verify_license(header, self.vreq["key_id"], code)
 
 if __name__ == "__main__":
     unittest.main()
+

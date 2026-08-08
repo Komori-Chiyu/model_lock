@@ -9,6 +9,9 @@ Commands:
               [--author-key author.pem]
   unpack      --vkit out.vkit --key key.pem --output DIR
   verify      --vkit out.vkit [--author-key author.pem]
+  gen-code    --model-id M --key-id <买家key_id> [--note 备注] [--count N] [--db ledger.db]
+  list-codes  [--model-id M] [--db ledger.db]
+  export-author-key --key author.pem --output author.spki
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from .ledger import Ledger
 from .vkit import (
     VkitError,
     find_model_json,
@@ -81,10 +85,15 @@ def cmd_pack(args) -> int:
         output=args.output,
         note=args.note or "",
         author_private_key=author_key,
+        code=args.code,
+        expires_at=args.expires,
+        ledger_path=args.db,
     )
     entry = find_model_json(header.files)
     print(f"packed {len(header.files)} files -> {args.output}")
     print(f"  recipients: {[r['key_id'] for r in header.recipients]}")
+    if header.license:
+        print(f"  license: key_id={header.license['key_id']} expires={header.license.get('expires_at')}")
     print(f"  model3.json: {entry}")
     return 0
 
@@ -111,6 +120,40 @@ def cmd_verify(args) -> int:
     return 0
 
 
+
+def cmd_gen_code(args) -> int:
+    ledger = Ledger(args.db)
+    codes = ledger.gen_codes(args.model_id, args.key_id, note=args.note or "", count=args.count)
+    for c in codes:
+        print(c)
+    return 0
+
+
+def cmd_list_codes(args) -> int:
+    ledger = Ledger(args.db)
+    for row in ledger.list_codes(args.model_id):
+        print(f"{row['code']} | {row['model_id']} | {row['key_id']} | {row['status']} | {row['note']}")
+    return 0
+
+
+def cmd_export_author_key(args) -> int:
+    import base64
+    key = _load_private_key(args.key)
+    spki = key.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    args.output.write_text(base64.b64encode(spki).decode("ascii") + "\n")
+    print(f"wrote author SPKI (base64) -> {args.output}")
+    return 0
+
+
+def _add_ledger_args(p):
+    p.add_argument("--model-id", required=True)
+    p.add_argument("--key-id", required=True)
+    p.add_argument("--note", default=None)
+    p.add_argument("--db", type=Path, default=Path("license_records.db"))
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="vkit", description="VKIT model packager")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -135,6 +178,9 @@ def main(argv=None) -> int:
     p.add_argument("--model-id", default=None)
     p.add_argument("--note", default=None)
     p.add_argument("--author-key", type=Path, default=None)
+    p.add_argument("--code", default=None, help="offline activation code (from gen-code)")
+    p.add_argument("--expires", default=None, help="license expiry date YYYY-MM-DD (optional)")
+    p.add_argument("--db", type=Path, default=None, help="path to license ledger db")
     p.set_defaults(func=cmd_pack)
 
     p = sub.add_parser("unpack")
@@ -147,6 +193,24 @@ def main(argv=None) -> int:
     p.add_argument("--vkit", type=Path, required=True)
     p.add_argument("--author-key", type=Path, default=None)
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("gen-code")
+    p.add_argument("--model-id", required=True)
+    p.add_argument("--key-id", required=True)
+    p.add_argument("--note", default=None)
+    p.add_argument("--count", type=int, default=1)
+    p.add_argument("--db", type=Path, default=Path("license_records.db"))
+    p.set_defaults(func=cmd_gen_code)
+
+    p = sub.add_parser("list-codes")
+    p.add_argument("--model-id", default=None)
+    p.add_argument("--db", type=Path, default=Path("license_records.db"))
+    p.set_defaults(func=cmd_list_codes)
+
+    p = sub.add_parser("export-author-key")
+    p.add_argument("--key", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.set_defaults(func=cmd_export_author_key)
 
     args = parser.parse_args(argv)
     try:

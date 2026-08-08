@@ -14,6 +14,16 @@ pub struct ClientState {
     pub server: String,
     pub token: String,
     pub device_id: String,
+    #[serde(default)]
+    pub author_spki_b64: String,
+    #[serde(default)]
+    pub accepted_licenses: Vec<AcceptedLicense>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AcceptedLicense {
+    pub model_id: String,
+    pub code_hash: String,
 }
 
 pub fn utcnow_iso() -> String {
@@ -49,6 +59,29 @@ pub fn save_state(state: &ClientState) -> Result<()> {
 }
 
 /// Collect a multi-source device fingerprint (best-effort on Windows).
+
+pub fn code_hash(code: &str) -> String {
+    hex::encode(Sha256::digest(code.as_bytes()))
+}
+
+pub fn is_license_accepted(state: &ClientState, model_id: &str, code_hash: &str) -> bool {
+    state
+        .accepted_licenses
+        .iter()
+        .any(|a| a.model_id == model_id && a.code_hash == code_hash)
+}
+
+pub fn accept_license(state: &mut ClientState, model_id: &str, code_hash: &str) -> Result<()> {
+    if !is_license_accepted(state, model_id, code_hash) {
+        state.accepted_licenses.push(AcceptedLicense {
+            model_id: model_id.to_string(),
+            code_hash: code_hash.to_string(),
+        });
+        save_state(state)?;
+    }
+    Ok(())
+}
+
 pub fn collect_hwid() -> String {
     let mut parts = Vec::new();
     if let Ok(guid) = read_machine_guid() {

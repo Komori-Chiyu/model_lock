@@ -40,6 +40,12 @@
       ]
     }
   ],
+  "license": {
+    "key_id": "买家公钥指纹",
+    "code_hash": "sha256(激活码) hex",
+    "expires_at": "2027-12-31（可选）",
+    "note": "买家备注"
+  },
   "author_public_key": "base64(DER SPKI)（可选）",
   "author_signature": "base64(RSASSA-PSS-SHA256)（可选，签名 canonical_bytes）"
 }

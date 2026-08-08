@@ -10,7 +10,11 @@
 
 use anyhow::{bail, Context, Result};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+use rsa::pkcs8::DecodePublicKey;
+use rsa::pss::{Signature, VerifyingKey};
+use rsa::signature::{SignatureEncoding, Verifier};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -47,6 +51,16 @@ pub struct Recipient {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+pub struct License {
+    pub key_id: String,
+    pub code_hash: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct Header {
     pub magic: String,
     pub version: u32,
@@ -56,6 +70,8 @@ pub struct Header {
     pub files: Vec<FileMeta>,
     #[serde(default)]
     pub note: String,
+    #[serde(default)]
+    pub license: Option<License>,
 }
 
 pub fn open_header(path: &Path) -> Result<(Header, u64)> {
@@ -241,3 +257,87 @@ impl Package {
         self.read_range(file_idx, 0, file.size)
     }
 }
+
+impl Header {
+    /// Canonical header bytes for signature verification (author_signature removed,
+    /// keys sorted, compact JSON — mirrors the Python packager).
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut value = serde_json::to_value(self).unwrap_or_default();
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("author_signature");
+        }
+        serde_json::to_vec(&value).unwrap_or_default()
+    }
+}
+
+/// Offline verification: author signature + license binding + activation code.
+///
+/// `code` may be `None` when the caller already cached an accepted license for
+/// this package; in that case the code hash check is skipped (signature, key_id
+/// binding and expiry are still verified).
+pub fn verify_package_license(
+    header: &Header,
+    author_spki: &[u8],
+    device_key_id: &str,
+    code: Option<&str>,
+) -> Result<()> {
+    let pub_der = header
+        .author_public_key
+        .as_deref()
+        .context("package is not signed by an author")?;
+    let sig_b64 = header
+        .author_signature
+        .as_deref()
+        .context("package is not signed by an author")?;
+    if pub_der != author_spki {
+        bail!("package signed by an unexpected author key");
+    }
+    let public_key = rsa::RsaPublicKey::from_public_key_der(pub_der)
+        .context("invalid author public key")?;
+    let verifying = VerifyingKey::<Sha256>::new(public_key);
+    let signature = Signature::try_from(util::b64d(sig_b64)?.as_slice())
+        .context("invalid author signature encoding")?;
+    verifying
+        .verify(&header.canonical_bytes(), &signature)
+        .map_err(|_| anyhow::anyhow!("author signature is invalid"))?;
+
+    let lic = header
+        .license
+        .as_ref()
+        .context("package has no offline license")?;
+    if !lic.key_id.eq_ignore_ascii_case(device_key_id) {
+        bail!("license is bound to a different device key");
+    }
+    if let Some(code) = code {
+        let hash = hex::encode(Sha256::digest(code.as_bytes()));
+        if hash != lic.code_hash {
+            bail!("activation code does not match this license");
+        }
+    }
+    if let Some(exp) = &lic.expires_at {
+        if today_iso() > *exp {
+            bail!("license expired on {exp}");
+        }
+    }
+    Ok(())
+}
+
+/// Current UTC date as YYYY-MM-DD (civil-from-days conversion).
+fn today_iso() -> String {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.as_secs() / 86400) as i64)
+        .unwrap_or(0);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+

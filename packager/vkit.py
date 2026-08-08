@@ -248,6 +248,7 @@ class PackageHeader:
     author_public_key: Optional[bytes] = None
     author_signature: Optional[bytes] = None
     note: str = ""
+    license: Optional[Dict] = None
 
     def to_json(self, with_signature: bool = True) -> Dict:
         doc: Dict = {
@@ -260,6 +261,8 @@ class PackageHeader:
             "files": [f.to_json() for f in self.files],
             "note": self.note,
         }
+        if self.license is not None:
+            doc["license"] = self.license
         if self.author_public_key is not None:
             doc["author_public_key"] = _b64(self.author_public_key)
         if with_signature and self.author_signature is not None:
@@ -282,6 +285,7 @@ class PackageHeader:
             recipients=list(doc["recipients"]),
             files=[FileMeta.from_json(f) for f in doc["files"]],
             note=str(doc.get("note", "")),
+            license=doc.get("license"),
         )
         if "author_public_key" in doc:
             header.author_public_key = _b64d(doc["author_public_key"], "author key")
@@ -319,7 +323,11 @@ def _unwrap_cek(recipients: List[Dict], private_key: rsa.RSAPrivateKey) -> bytes
             try:
                 return private_key.decrypt(
                     _b64d(entry.get("wrapped_cek", ""), "wrapped_cek"),
-                    padding.PKCS1v15(),
+                    padding.OAEP(
+                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                        algorithm=hashes.SHA256(),
+                        label=None,
+                    ),
                 )
             except ValueError as exc:
                 raise IntegrityError("failed to unwrap CEK") from exc
@@ -335,6 +343,9 @@ def pack_model(
     author_private_key: Optional[rsa.RSAPrivateKey] = None,
     block_size: int = BLOCK_SIZE,
     created_at: Optional[str] = None,
+    code: Optional[str] = None,
+    expires_at: Optional[str] = None,
+    ledger_path: Optional[Path] = None,
 ) -> PackageHeader:
     """Encrypt a model directory into a .vkit file for one or more buyers."""
     if block_size <= 0 or block_size > 16 * 1024 * 1024:
@@ -346,6 +357,24 @@ def pack_model(
     files = collect_files(model_dir)
     cek = AESGCM.generate_key(bit_length=256)
     recipients = [_wrap_cek(cek, r["spki_der"]) for r in reqs]
+
+    license_doc: Optional[Dict] = None
+    if code is not None:
+        if len(reqs) != 1:
+            raise VkitError("--code requires exactly one recipient vreq")
+        key_id = reqs[0]["key_id"]
+        if ledger_path is not None:
+            from .ledger import Ledger, LedgerError
+            try:
+                Ledger(ledger_path).validate_and_consume(code, key_id)
+            except LedgerError as exc:
+                raise VkitError(str(exc)) from exc
+        license_doc = {
+            "key_id": key_id,
+            "code_hash": hashlib.sha256(code.encode("utf-8")).hexdigest(),
+            "expires_at": expires_at,
+            "note": note,
+        }
 
     file_metas: List[FileMeta] = []
     data_len = 0
@@ -381,6 +410,7 @@ def pack_model(
             recipients=recipients,
             files=file_metas,
             note=note,
+            license=license_doc,
         )
         if author_private_key is not None:
             header.author_public_key = author_private_key.public_key().public_bytes(
@@ -391,7 +421,7 @@ def pack_model(
                 header.canonical_bytes(),
                 padding.PSS(
                     mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.MAX_LENGTH,
+                    salt_length=padding.PSS.DIGEST_LENGTH,
                 ),
                 hashes.SHA256(),
             )
@@ -458,12 +488,33 @@ def verify_author(header: PackageHeader, expected_author_spki: Optional[bytes] =
             header.canonical_bytes(),
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH,
+                salt_length=padding.PSS.DIGEST_LENGTH,
             ),
             hashes.SHA256(),
         )
     except InvalidSignature as exc:
         raise IntegrityError("author signature invalid") from exc
+
+
+def verify_license(header: PackageHeader, device_key_id: str, code: Optional[str]) -> Dict:
+    """Validate the offline license embedded in a signed package."""
+    import datetime
+    lic = header.license
+    if lic is None:
+        raise VkitError("package has no license")
+    if str(lic.get("key_id", "")).lower() != device_key_id.lower():
+        raise VkitError("license is bound to a different device key")
+    if code is None:
+        raise VkitError("activation code is required")
+    actual = hashlib.sha256(code.encode("utf-8")).hexdigest()
+    if actual != str(lic.get("code_hash", "")):
+        raise VkitError("activation code does not match this license")
+    exp = lic.get("expires_at")
+    if exp:
+        exp_date = datetime.date.fromisoformat(str(exp))
+        if datetime.date.today() > exp_date:
+            raise VkitError("license expired on " + str(exp))
+    return lic
 
 
 def open_cek(header: PackageHeader, private_key: rsa.RSAPrivateKey) -> bytes:

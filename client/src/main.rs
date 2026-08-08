@@ -1,10 +1,11 @@
 //! ModelLock buyer client.
 //!
 //! Subcommands:
-//!   init      --vreq-out <file>          create the device key and export .vreq
-//!   activate  --server <url> --code <c>  activate the code for this device
-//!   mount     --vkit <file> [--vts <exe>] [--server <url>]
-//!                                         mount the model and launch VTS
+//!   init          --vreq-out <file>     create the device key and export .vreq
+//!   trust-author  --file author.spki    trust the artist public key (offline)
+//!   mount         --vkit <file> [--code <CODE>] [--vts <exe>]
+//!                                        verify offline license, mount, launch VTS
+//!   activate      --server <url> --code <c>   (legacy online mode)
 
 mod auth;
 mod device_key;
@@ -21,15 +22,18 @@ use std::sync::Arc;
 use widestring::U16CString;
 
 use crate::auth::ClientState;
+use crate::util;
+use rsa::pkcs8::DecodePublicKey;
 
 fn usage() {
     eprintln!(
         "modelock-client\n\
          \n\
-         init      --vreq-out <file>\n\
-         activate  --server <url> --code <CODE>\n\
-         mount     --vkit <file.vkit> [--vts <VTube Studio.exe>] [--server <url>]\n\
-                   [--launch-mode steam|nosteam]   (default: steam)"
+         init          --vreq-out <file>\n\
+         trust-author  --file author.spki\n\
+         mount         --vkit <file.vkit> [--code <CODE>] [--vts <VTube Studio.exe>]\n\
+                       [--launch-mode steam|nosteam]   (default: steam)\n\
+         activate      --server <url> --code <CODE>   (legacy online)"
     );
 }
 
@@ -59,16 +63,17 @@ fn cmd_activate(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn ensure_valid_token(state: &mut ClientState) -> Result<()> {
-    match auth::check_status(state) {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            let token = auth::refresh_token(state)?;
-            state.token = token;
-            auth::save_state(state)?;
-            Ok(())
-        }
-    }
+fn cmd_trust_author(args: &[String]) -> Result<()> {
+    let file = arg_value(args, "--file").context("--file is required (author.spki from packager export-author-key)")?;
+    let text = std::fs::read_to_string(&file)?;
+    let b64 = text.trim();
+    let der = util::b64d(b64).context("author key file must contain base64 DER SPKI")?;
+    rsa::RsaPublicKey::from_public_key_der(&der).context("not a valid RSA public key")?;
+    let mut state = auth::load_state()?.unwrap_or_default();
+    state.author_spki_b64 = util::b64e(&der);
+    auth::save_state(&state)?;
+    println!("trusted artist key: {}", device_key::key_id_of_spki(&der));
+    Ok(())
 }
 
 fn sanitize_model_id(raw: &str) -> String {
@@ -93,15 +98,10 @@ fn sanitize_model_id(raw: &str) -> String {
 fn cmd_mount(args: &[String]) -> Result<()> {
     let vkit_path = arg_value(args, "--vkit").context("--vkit is required")?;
     let vts_override = arg_value(args, "--vts");
-    let server_override = arg_value(args, "--server");
+    let code_arg = arg_value(args, "--code");
     let launch_mode = arg_value(args, "--launch-mode").unwrap_or_else(|| "steam".to_string());
 
-    let mut state = auth::load_state()?.context("not activated; run `activate` first")?;
-    if let Some(server) = server_override {
-        state.server = server;
-    }
-    ensure_valid_token(&mut state)?;
-
+    let mut state = auth::load_state()?.unwrap_or_default();
     let key = device_key::open_or_create()?;
     let pkg = Arc::new(vkit::Package::open(std::path::Path::new(&vkit_path), &key)?);
     log::info!(
@@ -110,6 +110,32 @@ fn cmd_mount(args: &[String]) -> Result<()> {
         pkg.header.files.len(),
         pkg.total_protected_bytes()
     );
+
+    // Offline license verification (no server).
+    if pkg.header.license.is_some() {
+        let spki_b64 = state.author_spki_b64.clone();
+        if spki_b64.is_empty() {
+            bail!(
+                "this package is licensed and requires trusting the artist key first: run `trust-author --file author.spki`"
+            );
+        }
+        let author_spki = util::b64d(&spki_b64).context("stored author key is invalid")?;
+        let lic = pkg.header.license.as_ref().unwrap();
+        let cached = auth::is_license_accepted(&state, &pkg.header.model_id, &lic.code_hash);
+        let code = if cached {
+            None
+        } else {
+            Some(code_arg.context("this package requires an activation code: pass --code <CODE>")?)
+        };
+        vkit::verify_package_license(&pkg.header, &author_spki, &key.key_id, code)?;
+        if code.is_some() {
+            auth::accept_license(&mut state, &pkg.header.model_id, &lic.code_hash)?;
+            state = auth::load_state()?.unwrap_or_default();
+        }
+        println!("offline license OK (model {})", pkg.header.model_id);
+    } else {
+        log::warn!("package has no offline license; skipping activation check");
+    }
 
     // Mount point: VTS model directory (created before VTS starts).
     let vts_exe = match vts_override {
@@ -213,6 +239,7 @@ fn main() -> Result<()> {
     }
     match args[1].as_str() {
         "init" => cmd_init(&args[2..]),
+        "trust-author" => cmd_trust_author(&args[2..]),
         "activate" => cmd_activate(&args[2..]),
         "mount" => cmd_mount(&args[2..]),
         other => {
