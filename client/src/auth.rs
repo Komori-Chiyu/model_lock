@@ -94,7 +94,7 @@ fn read_machine_guid() -> std::io::Result<String> {
 }
 
 fn read_computer_name() -> std::io::Result<String> {
-    use winapi::um::sysinfoapi::{GetComputerNameW, COMPUTER_NAME_FORMAT};
+    use winapi::um::sysinfoapi::GetComputerNameW;
     unsafe {
         let mut buf = [0u16; 64];
         let mut len = buf.len() as u32;
@@ -116,7 +116,7 @@ fn read_volume_serial() -> std::io::Result<String> {
             0,
             &mut serial,
             std::ptr::null_mut(),
-            0,
+            std::ptr::null_mut(),
             std::ptr::null_mut(),
             0,
         ) == 0

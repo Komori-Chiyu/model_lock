@@ -1,7 +1,8 @@
 //! Small shared helpers (UTF-16 conversion, hex/base64, path rules).
 
 use anyhow::{bail, Result};
-use widestring::{U16CString, U16String};
+use base64::Engine;
+use widestring::{U16CStr, U16CString, U16String, U16Str};
 
 pub fn to_utf16(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
@@ -12,7 +13,7 @@ pub fn to_utf16_c(s: &str) -> U16CString {
 }
 
 pub fn from_utf16(data: &[u16]) -> String {
-    U16String::from_slice(data).to_string_lossy()
+    U16Str::from_slice(data).to_string_lossy()
 }
 
 pub fn b64e(data: &[u8]) -> String {
@@ -20,7 +21,6 @@ pub fn b64e(data: &[u8]) -> String {
 }
 
 pub fn b64d(text: &str) -> Result<Vec<u8>> {
-    use base64::Engine;
     Ok(base64::engine::general_purpose::STANDARD.decode(text)?)
 }
 

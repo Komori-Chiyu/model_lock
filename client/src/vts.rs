@@ -29,11 +29,11 @@ use winapi::um::tlhelp32::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use winapi::um::winbase::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, INFINITE, QueryFullProcessImageNameW, WAIT_OBJECT_0,
+    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, QueryFullProcessImageNameW, WAIT_OBJECT_0,
 };
 use winapi::um::winnt::{
     HANDLE, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectExtendedLimitInformation, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    JobObjectExtendedLimitInformation, PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE,
     DUPLICATE_SAME_ACCESS,
 };
 use winapi::um::winnt::KEY_READ;
@@ -66,7 +66,7 @@ fn reg_read_string(hive: winapi::shared::minwindef::HKEY, subkey: &str, value: &
         }
         let used = (len as usize) / 2;
         Some(
-            widestring::U16String::from_slice(&buf[..used.min(buf.len())])
+            widestring::U16Str::from_slice(&buf[..used.min(buf.len())])
                 .to_string_lossy()
                 .trim_end_matches('\0')
                 .to_string(),
@@ -95,7 +95,7 @@ fn process_image(snap: winapi::um::winnt::HANDLE, pid: u32) -> Option<String> {
         loop {
             if entry.th32ProcessID == pid {
                 return Some(
-                    widestring::U16String::from_slice(&entry.szExeFile)
+                    widestring::U16Str::from_slice(&entry.szExeFile)
                         .to_string_lossy()
                         .trim_end_matches('\0')
                         .to_string(),
@@ -143,7 +143,7 @@ fn pid_exe_path(pid: u32) -> Option<String> {
             return None;
         }
         Some(
-            widestring::U16String::from_slice(&buf[..(len as usize).min(buf.len())])
+            widestring::U16Str::from_slice(&buf[..(len as usize).min(buf.len())])
                 .to_string_lossy()
                 .to_string(),
         )
@@ -175,7 +175,7 @@ pub fn collect_vts_pids() -> HashSet<u32> {
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         if Process32FirstW(snap, &mut entry) != 0 {
             loop {
-                let name = widestring::U16String::from_slice(&entry.szExeFile)
+                let name = widestring::U16Str::from_slice(&entry.szExeFile)
                     .to_string_lossy()
                     .trim_end_matches('\0')
                     .to_string();
@@ -217,12 +217,12 @@ pub fn steam_exe_path() -> Option<PathBuf> {
 /// Ask Steam to launch VTube Studio (`steam.exe -applaunch 1325860`).
 pub fn request_steam_launch() -> Result<()> {
     let steam = steam_exe_path().context("steam.exe not found; is Steam installed?")?;
-    let mut cmd = format!("\"{}\" -applaunch {}", steam.display(), STEAM_APPID);
+    let cmd = format!("\"{}\" -applaunch {}", steam.display(), STEAM_APPID);
     let mut cmd_w: Vec<u16> = cmd.encode_utf16().collect();
     cmd_w.push(0);
-    let mut si: STARTUPINFOW = std::mem::zeroed();
+    let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
     si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let ok = unsafe {
         CreateProcessW(
             ptr::null(),
@@ -295,7 +295,7 @@ pub fn find_vts() -> Result<PathBuf> {
             entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
             if Process32FirstW(snap, &mut entry) != 0 {
                 loop {
-                    let name = widestring::U16String::from_slice(&entry.szExeFile)
+                    let name = widestring::U16Str::from_slice(&entry.szExeFile)
                         .to_string_lossy()
                         .trim_end_matches('\0')
                         .to_string();
@@ -433,12 +433,12 @@ pub fn adopt_vts(pid: u32, handle: HANDLE) -> Result<VtsProcess> {
 /// Launch VTS directly with `-nosteam` (kept for dev/test only; the default
 /// and supported mode is the Steam launch).
 pub fn launch_vts_nosteam(exe: &Path) -> Result<VtsProcess> {
-    let mut cmd = format!("\"{}\" -nosteam", exe.display());
+    let cmd = format!("\"{}\" -nosteam", exe.display());
     let mut cmd_w: Vec<u16> = cmd.encode_utf16().collect();
     cmd_w.push(0);
-    let mut si: STARTUPINFOW = std::mem::zeroed();
+    let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
     si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let ok = unsafe {
         CreateProcessW(
             ptr::null(),
@@ -480,7 +480,7 @@ pub fn launch_vts_nosteam(exe: &Path) -> Result<VtsProcess> {
 /// Open a handle to a PID for authorization checks (prevents PID reuse).
 pub fn authorize_pid(pid: u32) -> Result<HANDLE> {
     unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, FALSE, pid);
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
         if handle.is_null() {
             bail!("OpenProcess({pid}) failed: {}", std::io::Error::last_os_error());
         }
@@ -493,7 +493,7 @@ pub fn wait_for_exit(handle: HANDLE, timeout_ms: u32) -> bool {
 }
 
 pub fn kill_vts(handle: HANDLE) {
-    unsafe { TerminateProcess(handle, 1) }
+    unsafe { TerminateProcess(handle, 1); }
 }
 
 pub fn process_alive(handle: HANDLE) -> bool {
