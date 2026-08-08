@@ -294,11 +294,15 @@ def _wrap_cek(cek: bytes, spki_der: bytes) -> Dict:
     pub = serialization.load_der_public_key(spki_der)
     wrapped = pub.encrypt(
         cek,
-        padding.PKCS1v15(),
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
     )
     return {
         "key_id": key_id_of_spki(spki_der),
-        "algorithm": "RSA-PKCS1v15",
+        "algorithm": "RSA-OAEP-SHA256",
         "wrapped_cek": _b64(wrapped),
     }
 

@@ -24,7 +24,7 @@ use winapi::um::ncrypt::{
 
 use crate::util;
 
-const KEY_NAME: &str = "ModelLockDeviceKey6";
+const KEY_NAME: &str = "ModelLockDeviceKey8";
 const NCRYPT_ALLOW_DECRYPT_FLAG: u32 = 0x0000_0001;
 const NCRYPT_ALLOW_EXPORT_NONE: u32 = 0;
 
@@ -226,11 +226,35 @@ fn parse_rsa_public_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         bail!("public key blob length mismatch");
     }
     let body = &blob[HEADER..];
-    let exp = body[..exp_len].iter().rev().cloned().collect::<Vec<_>>();
-    let modulus = body[exp_len..].iter().rev().cloned().collect::<Vec<_>>();
-    // Only strip leading zeros from the exponent; keep the modulus at its full
-    // size from the BCRYPT blob so the SPKI matches the actual CNG key pair.
-    Ok((modulus, strip_leading_zeros(&exp)))
+    // BCRYPT_RSAPUBLIC_BLOB: PublicExponent and Modulus are stored in
+    // little-endian.  Reverse byte order to obtain big-endian for DER.
+    let exp_raw = &body[..exp_len];
+    let mod_raw = &body[exp_len..exp_len + mod_len];
+    // Verify blob structure: exponent first, then modulus.
+    log::debug!(
+        "BCRYPT blob total={} exp_ofs=0 exp_len={} mod_ofs={} mod_len={}",
+        blob.len(), exp_len, exp_len, mod_len
+    );
+    // Treat as little-endian: reverse each field.
+    let exp: Vec<u8> = exp_raw.iter().rev().cloned().collect();
+    let modulus: Vec<u8> = mod_raw.iter().rev().cloned().collect();
+    // Verify the modulus is odd (RSA requirement).
+    if !modulus.is_empty() && modulus[modulus.len() - 1] % 2 == 0 {
+        log::warn!(
+            "BCRYPT modulus appears even (last byte={:#04x}); trying without reversal",
+            modulus[modulus.len() - 1]
+        );
+        // Maybe the blob is already big-endian. Use raw bytes.
+        let modulus = mod_raw.to_vec();
+        // Check again
+        if !modulus.is_empty() && modulus[modulus.len() - 1] % 2 == 0 {
+            bail!("BCRYPT modulus is even in both LE and BE interpretations");
+        }
+        log::debug!("Modulus looks valid in native (BE) byte order");
+        Ok((modulus, strip_leading_zeros(&exp)))
+    } else {
+        Ok((modulus, strip_leading_zeros(&exp)))
+    }
 }
 
 fn strip_leading_zeros(v: &[u8]) -> Vec<u8> {
@@ -300,39 +324,13 @@ fn build_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Unwrap the package CEK using the KSP private key.
-/// On this Windows build NCryptDecrypt rejects any explicit padding flag;
-/// we use raw RSA (flags=0) and strip PKCS#1 v1.5 padding ourselves.
-/// Unwrap the package CEK using the KSP private key (PKCS#1 v1.5).
 ///
-/// Primary path lets CNG strip the padding (NCRYPT_PAD_PKCS1_FLAG with a NULL
-/// padding info). If a CNG build rejects the padding flag (previously observed
-/// when the persisted key was created with an invalid Key Usage value), we
-/// fall back to raw RSA decryption and strip PKCS#1 v1.5 padding manually.
+/// Does raw RSA decryption (NCryptDecrypt with flags=0, the only mode that
+/// works on this Windows build), then strips OAEP-SHA256 padding manually.
 pub fn unwrap_cek(key: &DeviceKey, wrapped: &[u8]) -> Result<Vec<u8>> {
     unsafe {
-        // Preferred: CNG-managed PKCS#1 v1.5 unpadding.
-        let mut out = vec![0u8; 256];
-        let mut written: u32 = 0;
-        let status = NCryptDecrypt(
-            key.key_handle,
-            wrapped.as_ptr(),
-            wrapped.len() as u32,
-            std::ptr::null_mut(),
-            out.as_mut_ptr(),
-            out.len() as u32,
-            &mut written,
-            winapi::um::ncrypt::NCRYPT_PAD_PKCS1_FLAG,
-        );
-        if status == 0 {
-            out.truncate(written as usize);
-            log::debug!("NCryptDecrypt(PKCS1) ok, {} bytes", out.len());
-            return Ok(out);
-        }
-        log::warn!(
-            "NCryptDecrypt(PKCS1) failed {status:#x}; falling back to raw RSA + manual unpadding"
-        );
-
-        // Fallback: raw RSA decryption, then manual PKCS#1 v1.5 unpadding.
+        // Raw RSA decryption (flags=0, no padding info).
+        // Explicit padding flags (0x02, 0x04) all return NTE_INVALID_PARAMETER.
         let mut raw = vec![0u8; 256];
         let mut written: u32 = 0;
         nerr(
@@ -350,25 +348,86 @@ pub fn unwrap_cek(key: &DeviceKey, wrapped: &[u8]) -> Result<Vec<u8>> {
         )?;
         raw.truncate(written as usize);
 
-        // PKCS#1 v1.5 block: 0x00 || 0x02 || PS (non-zero) || 0x00 || M
-        if raw.len() < 11 || raw[0] != 0x00 || raw[1] != 0x02 {
-            let preview = if raw.len() > 16 { &raw[..16] } else { &raw[..] };
-            bail!(
-                "invalid PKCS1v1.5 padding: out[0]={:#04x} out[1]={:#04x} len={} first16={:02x?}",
-                raw[0],
-                raw[1],
-                raw.len(),
-                preview
-            );
-        }
-        let sep = raw[2..]
-            .iter()
-            .position(|&b| b == 0x00)
-            .ok_or_else(|| anyhow::anyhow!("PKCS1v1.5 padding separator not found"))?;
-        let msg = raw[2 + sep + 1..].to_vec();
-        log::debug!("manual unpadding ok, {} bytes", msg.len());
-        Ok(msg)
+        // Manual OAEP-SHA256 unpadding (RFC 8017 §7.1.2).
+        oaep_sha256_decode(&raw)
     }
+}
+
+/// Manual OAEP-SHA256 decoding.
+///
+/// EME-OAEP decoding as specified in RFC 8017 §7.1.2:
+///   EM = 0x00 || maskedSeed || maskedDB
+///   seed = MGF1(maskedDB, hLen) XOR maskedSeed
+///   DB  = MGF1(seed, hLen) XOR maskedDB
+///   DB  = lHash' || PS || 0x01 || M
+/// where lHash' = SHA256(label), PS = zero bytes.
+fn oaep_sha256_decode(em: &[u8]) -> Result<Vec<u8>> {
+    let hlen: usize = 32; // SHA-256 output length
+    if em.len() < 2 * hlen + 2 {
+        bail!("OAEP: encoded message too short ({} bytes)", em.len());
+    }
+    if em[0] != 0x00 {
+        bail!("OAEP: invalid first byte {:#04x}", em[0]);
+    }
+
+    let masked_seed = &em[1..1 + hlen];
+    let masked_db = &em[1 + hlen..];
+
+    // seedMask = MGF1(maskedDB, hLen)
+    let seed_mask = mgf1_sha256(masked_db, hlen);
+    // seed = maskedSeed XOR seedMask
+    let mut seed = vec![0u8; hlen];
+    for i in 0..hlen {
+        seed[i] = masked_seed[i] ^ seed_mask[i];
+    }
+
+    // dbMask = MGF1(seed, maskedDB.len)
+    let db_mask = mgf1_sha256(&seed, masked_db.len());
+
+    // DB = maskedDB XOR dbMask
+    let mut db = vec![0u8; masked_db.len()];
+    for i in 0..db.len() {
+        db[i] = masked_db[i] ^ db_mask[i];
+    }
+
+    // Verify lHash = SHA256("") (empty label)
+    let lhash = {
+        let mut hasher = Sha256::new();
+        Digest::update(&mut hasher, b"");
+        hasher.finalize()
+    };
+    if &db[..hlen] != lhash.as_slice() {
+        log::debug!("OAEP lHash expected: {}", hex::encode(lhash.as_slice()));
+        log::debug!("OAEP lHash got:      {}", hex::encode(&db[..hlen]));
+        log::debug!("OAEP masked_db first 32: {}", hex::encode(&masked_db[..32.min(masked_db.len())]));
+        log::debug!("OAEP seed first 16: {}", hex::encode(&seed[..16]));
+        log::debug!("OAEP db_mask first 16: {}", hex::encode(&db_mask[..16]));
+        bail!("OAEP: label hash mismatch (wrong key or parameters)");
+    }
+
+    // Find 0x01 separator after zero padding
+    let payload_start = db[hlen..]
+        .iter()
+        .position(|&b| b == 0x01)
+        .map(|p| hlen + p + 1)
+        .ok_or_else(|| anyhow::anyhow!("OAEP: payload separator not found"))?;
+
+    Ok(db[payload_start..].to_vec())
+}
+
+/// MGF1 with SHA-256.
+fn mgf1_sha256(seed: &[u8], len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    let mut counter: u32 = 0;
+    while out.len() < len {
+        let mut hasher = Sha256::new();
+        Digest::update(&mut hasher, seed);
+        Digest::update(&mut hasher, &counter.to_be_bytes());
+        out.extend_from_slice(&hasher.finalize());
+        counter += 1;
+    }
+    out.truncate(len);
+    out
 }
 
 /// Serialize the buyer request file (.vreq) for the artist.
@@ -406,5 +465,18 @@ mod tests {
     fn strip_zeros() {
         assert_eq!(strip_leading_zeros(&[0, 0, 1, 2]), vec![1, 2]);
         assert_eq!(strip_leading_zeros(&[0]), vec![0]);
+    }
+
+    #[test]
+    fn test_mgf1() {
+        // Test vector from RFC 8017 or verify against known Python output
+        let seed = hex::decode("f6637a87b95697358a24cfa324eb54b5").unwrap();
+        let result = mgf1_sha256(&seed, 223);
+        // Compare with Python's MGF1 output
+        assert_eq!(
+            hex::encode(&result[..16]),
+            "88592a2296f1f5b39960f6064471148b",
+            "MGF1 first 16 bytes should match Python"
+        );
     }
 }
