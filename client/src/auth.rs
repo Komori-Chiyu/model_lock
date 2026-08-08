@@ -65,7 +65,8 @@ pub fn collect_hwid() -> String {
 
 fn read_machine_guid() -> std::io::Result<String> {
     use winapi::shared::minwindef::HKEY;
-    use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE, KEY_READ};
+    use winapi::um::winnt::KEY_READ;
+    use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE};
     unsafe {
         let subkey = util::to_utf16_c(r"SOFTWARE\Microsoft\Cryptography");
         let mut hkey: HKEY = std::ptr::null_mut();

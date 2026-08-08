@@ -135,20 +135,30 @@ fn cmd_mount(args: &[String]) -> Result<()> {
     std::fs::create_dir_all(&mount_point)?;
     log::info!("mount point: {}", mount_point.display());
 
-    let fs = vfs::ModelFs::new(pkg);
+    let fs = Arc::new(vfs::ModelFs::new(pkg));
     let mount_point_str = mount_point.to_string_lossy().to_string();
     let mount_point_w = U16CString::from_str(&mount_point_str)?;
 
-    unsafe { dokan::init() };
-    let options = MountOptions {
-        single_thread: false,
-        flags: MountFlags::ALT_STREAM,
-        ..Default::default()
-    };
-    let mut mounter = FileSystemMounter::new(&fs, &mount_point_w, &options);
-    let file_system = mounter
-        .mount()
-        .map_err(|e| anyhow::anyhow!("Dokan mount failed: {e}"))?;
+    // Dokan mount() blocks the calling thread until unmount, so the volume
+    // lives on a dedicated thread while the main thread launches VTS.
+    let mount_fs = fs.clone();
+    let mount_mp = mount_point_w.clone();
+    let mount_thread = std::thread::spawn(move || {
+        unsafe { dokan::init() };
+        let options = MountOptions {
+            single_thread: false,
+            flags: MountFlags::ALT_STREAM,
+            ..Default::default()
+        };
+        let mut mounter = FileSystemMounter::new(&mount_fs, &mount_mp, &options);
+        match mounter.mount() {
+            Ok(_volume) => log::info!("volume unmounted"),
+            Err(e) => log::error!("Dokan mount failed: {e}"),
+        }
+        unsafe { dokan::shutdown() };
+    });
+    // Give Dokan a moment to mount before VTS scans the model directory.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
     log::info!("volume mounted");
 
     // Launch VTS. Default (and enforced) mode: via Steam, then monitor for the
@@ -188,9 +198,8 @@ fn cmd_mount(args: &[String]) -> Result<()> {
         winapi::um::handleapi::CloseHandle(auth_handle);
         let _ = dokan::unmount(&mount_point_w);
     }
-    drop(file_system);
+    let _ = mount_thread.join();
     let _ = std::fs::remove_dir(&mount_point);
-    unsafe { dokan::shutdown() };
     log::info!("done");
     Ok(())
 }

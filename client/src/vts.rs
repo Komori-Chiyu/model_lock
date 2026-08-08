@@ -19,10 +19,7 @@ use std::time::{Duration, Instant};
 use winapi::shared::minwindef::{BOOL, DWORD, FALSE};
 use winapi::shared::winerror::ERROR_SUCCESS;
 use winapi::um::handleapi::{CloseHandle, DuplicateHandle, INVALID_HANDLE_VALUE};
-use winapi::um::jobapi2::{
-    AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-};
+use winapi::um::jobapi2::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject};
 use winapi::um::processthreadsapi::{
     CreateProcessW, GetCurrentProcess, GetProcessId, OpenProcess, ResumeThread, TerminateProcess,
     PROCESS_INFORMATION, STARTUPINFOW,
@@ -31,12 +28,16 @@ use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::tlhelp32::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
-use winapi::um::winbase::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, INFINITE, WAIT_OBJECT_0};
-use winapi::um::winnt::{
-    HANDLE, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, DUPLICATE_SAME_ACCESS,
+use winapi::um::winbase::{
+    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, INFINITE, QueryFullProcessImageNameW, WAIT_OBJECT_0,
 };
-use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ};
+use winapi::um::winnt::{
+    HANDLE, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectExtendedLimitInformation, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    DUPLICATE_SAME_ACCESS,
+};
+use winapi::um::winnt::KEY_READ;
+use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER};
 
 pub const VTS_EXE: &str = "VTube Studio.exe";
 pub const STEAM_APPID: &str = "1325860";
@@ -123,6 +124,29 @@ fn process_parent_pid(snap: winapi::um::winnt::HANDLE, pid: u32) -> Option<u32> 
                 return None;
             }
         }
+    }
+}
+
+
+/// Full path of a process image via QueryFullProcessImageNameW.
+fn pid_exe_path(pid: u32) -> Option<String> {
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        Some(
+            widestring::U16String::from_slice(&buf[..(len as usize).min(buf.len())])
+                .to_string_lossy()
+                .to_string(),
+        )
     }
 }
 
@@ -249,7 +273,7 @@ pub fn wait_for_steam_vts(existing: &HashSet<u32>, timeout_secs: u64) -> Result<
             let handle = authorize_pid(*pid)?;
             let verified = unsafe { GetProcessId(handle) } == *pid;
             if !verified {
-                let _ = handle;
+                unsafe { CloseHandle(handle) };
                 continue;
             }
             log::info!("authorized Steam-launched VTS pid={pid}");
@@ -276,11 +300,7 @@ pub fn find_vts() -> Result<PathBuf> {
                         .trim_end_matches('\0')
                         .to_string();
                     if name.eq_ignore_ascii_case(VTS_EXE) {
-                        let path = widestring::U16String::from_slice(&entry.szExePath)
-                            .to_string_lossy()
-                            .trim_end_matches('\0')
-                            .to_string();
-                        if !path.is_empty() {
+                        if let Some(path) = pid_exe_path(entry.th32ProcessID) {
                             CloseHandle(snap);
                             return Ok(PathBuf::from(path));
                         }
