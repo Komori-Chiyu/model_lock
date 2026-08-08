@@ -65,16 +65,6 @@ extern "system" {
         pcbResult: *mut u32,
         dwFlags: u32,
     ) -> SECURITY_STATUS;
-    fn NCryptEncrypt(
-        hKey: NCRYPT_KEY_HANDLE,
-        pbInput: *const u8,
-        cbInput: u32,
-        pPaddingInfo: *mut c_void,
-        pbOutput: *mut u8,
-        cbOutput: u32,
-        pcbResult: *mut u32,
-        dwFlags: u32,
-    ) -> SECURITY_STATUS;
 }
 
 pub struct DeviceKey {
@@ -312,46 +302,38 @@ fn build_spki(modulus: &[u8], exponent: &[u8]) -> Result<Vec<u8>> {
 /// Unwrap the package CEK using the KSP private key.
 /// On this Windows build NCryptDecrypt rejects any explicit padding flag;
 /// we use raw RSA (flags=0) and strip PKCS#1 v1.5 padding ourselves.
+/// Unwrap the package CEK using the KSP private key (PKCS#1 v1.5).
+///
+/// Primary path lets CNG strip the padding (NCRYPT_PAD_PKCS1_FLAG with a NULL
+/// padding info). If a CNG build rejects the padding flag (previously observed
+/// when the persisted key was created with an invalid Key Usage value), we
+/// fall back to raw RSA decryption and strip PKCS#1 v1.5 padding manually.
 pub fn unwrap_cek(key: &DeviceKey, wrapped: &[u8]) -> Result<Vec<u8>> {
     unsafe {
-        // Test: first encrypt then decrypt a known value to verify the key pair
-        let test_msg = b"HELLO_WORLD_TEST_1234567890ab"; // 32 bytes
-        let mut enc_buf = vec![0u8; 256];
-        let mut enc_len: u32 = 0;
-        let enc_status = NCryptEncrypt(
-            key.key_handle,
-            test_msg.as_ptr(),
-            test_msg.len() as u32,
-            std::ptr::null_mut(),
-            enc_buf.as_mut_ptr(),
-            enc_buf.len() as u32,
-            &mut enc_len,
-            0,
-        );
-        log::debug!("NCryptEncrypt test: status={:#x} enc_len={}", enc_status, enc_len);
-        if enc_status == 0 {
-            enc_buf.truncate(enc_len as usize);
-            // Try decrypting it back
-            let mut dec_buf = vec![0u8; 256];
-            let mut dec_len: u32 = 0;
-            let dec_status = NCryptDecrypt(
-                key.key_handle,
-                enc_buf.as_ptr(),
-                enc_buf.len() as u32,
-                std::ptr::null_mut(),
-                dec_buf.as_mut_ptr(),
-                dec_buf.len() as u32,
-                &mut dec_len,
-                0,
-            );
-            log::debug!("NCryptDecrypt test back: status={:#x} dec_len={}", dec_status, dec_len);
-            if dec_status == 0 {
-                dec_buf.truncate(dec_len as usize);
-                log::debug!("Roundtrip result: {:02x?}", &dec_buf[..dec_len as usize]);
-            }
-        }
-
+        // Preferred: CNG-managed PKCS#1 v1.5 unpadding.
         let mut out = vec![0u8; 256];
+        let mut written: u32 = 0;
+        let status = NCryptDecrypt(
+            key.key_handle,
+            wrapped.as_ptr(),
+            wrapped.len() as u32,
+            std::ptr::null_mut(),
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut written,
+            winapi::um::ncrypt::NCRYPT_PAD_PKCS1_FLAG,
+        );
+        if status == 0 {
+            out.truncate(written as usize);
+            log::debug!("NCryptDecrypt(PKCS1) ok, {} bytes", out.len());
+            return Ok(out);
+        }
+        log::warn!(
+            "NCryptDecrypt(PKCS1) failed {status:#x}; falling back to raw RSA + manual unpadding"
+        );
+
+        // Fallback: raw RSA decryption, then manual PKCS#1 v1.5 unpadding.
+        let mut raw = vec![0u8; 256];
         let mut written: u32 = 0;
         nerr(
             NCryptDecrypt(
@@ -359,24 +341,33 @@ pub fn unwrap_cek(key: &DeviceKey, wrapped: &[u8]) -> Result<Vec<u8>> {
                 wrapped.as_ptr(),
                 wrapped.len() as u32,
                 std::ptr::null_mut(),
-                out.as_mut_ptr(),
-                out.len() as u32,
+                raw.as_mut_ptr(),
+                raw.len() as u32,
                 &mut written,
-                0, // raw RSA — explicit flags are rejected on this build
+                0,
             ),
-            "NCryptDecrypt",
+            "NCryptDecrypt(raw)",
         )?;
-        out.truncate(written as usize);
+        raw.truncate(written as usize);
 
-        // Strip PKCS#1 v1.5 padding: 0x00 || 0x02 || PS (non-zero) || 0x00 || M
-        if out.len() < 11 || out[0] != 0x00 || out[1] != 0x02 {
-            let preview = if out.len() > 16 { &out[..16] } else { &out[..] };
-            bail!("invalid PKCS1v1.5 padding: out[0]={:#04x} out[1]={:#04x} len={} first16={:02x?}",
-                out[0], out[1], out.len(), preview);
+        // PKCS#1 v1.5 block: 0x00 || 0x02 || PS (non-zero) || 0x00 || M
+        if raw.len() < 11 || raw[0] != 0x00 || raw[1] != 0x02 {
+            let preview = if raw.len() > 16 { &raw[..16] } else { &raw[..] };
+            bail!(
+                "invalid PKCS1v1.5 padding: out[0]={:#04x} out[1]={:#04x} len={} first16={:02x?}",
+                raw[0],
+                raw[1],
+                raw.len(),
+                preview
+            );
         }
-        let sep = out[2..].iter().position(|&b| b == 0x00)
+        let sep = raw[2..]
+            .iter()
+            .position(|&b| b == 0x00)
             .ok_or_else(|| anyhow::anyhow!("PKCS1v1.5 padding separator not found"))?;
-        Ok(out[2 + sep + 1..].to_vec())
+        let msg = raw[2 + sep + 1..].to_vec();
+        log::debug!("manual unpadding ok, {} bytes", msg.len());
+        Ok(msg)
     }
 }
 

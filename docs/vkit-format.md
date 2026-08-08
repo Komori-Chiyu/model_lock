@@ -26,8 +26,8 @@
   "recipients": [
     {
       "key_id": "sha256(spki)[:16] 的 hex",
-      "algorithm": "RSA-OAEP-SHA256",
-      "wrapped_cek": "base64(RSA-OAEP(CEK))"
+      "algorithm": "RSA-PKCS1v1.5",
+      "wrapped_cek": "base64(RSA-PKCS1v1.5(CEK))"
     }
   ],
   "files": [
@@ -45,7 +45,7 @@
 }
 ```
 
-- CEK：32 随机字节；每个买家一个 `recipients` 条目，用买家 RSA-2048 公钥 OAEP(SHA-256) 封装。
+- CEK：32 随机字节；每个买家一个 `recipients` 条目，用买家 RSA-2048 公钥 PKCS#1 v1.5 封装。
   包内不存在任何非接收者可推导的密钥材料。
 - 每块 AAD = `b"VKIT1" || file_path_utf8 || block_index_le_u64`，块间不可交换、不可跨文件移动。
 - 作者签名覆盖 `canonical_bytes`（header 去掉签名字段后 sort_keys + 紧凑 JSON）。

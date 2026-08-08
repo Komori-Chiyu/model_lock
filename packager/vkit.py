@@ -315,11 +315,7 @@ def _unwrap_cek(recipients: List[Dict], private_key: rsa.RSAPrivateKey) -> bytes
             try:
                 return private_key.decrypt(
                     _b64d(entry.get("wrapped_cek", ""), "wrapped_cek"),
-                    padding.OAEP(
-                        mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                        algorithm=hashes.SHA256(),
-                        label=None,
-                    ),
+                    padding.PKCS1v15(),
                 )
             except ValueError as exc:
                 raise IntegrityError("failed to unwrap CEK") from exc
