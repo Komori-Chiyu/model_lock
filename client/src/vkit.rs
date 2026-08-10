@@ -66,6 +66,8 @@ pub struct Header {
     pub magic: String,
     pub version: u32,
     pub model_id: String,
+    #[serde(default)]
+    pub created_at: String,
     pub block_size: u64,
     pub recipients: Vec<Recipient>,
     pub files: Vec<FileMeta>,
