@@ -86,7 +86,7 @@ fn snapshot(page: Page, name: &str, dir: &str) -> anyhow::Result<()> {
     let mut app = App::new(Box::new(MockCore::new()));
     app.set_page(page);
 
-    let mut ctx = egui::Context::default();
+    let ctx = egui::Context::default();
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(W as f32, H as f32))),
         ..Default::default()
