@@ -201,6 +201,29 @@ class VkitTests(unittest.TestCase):
         with self.assertRaises(VkitError):
             verify_license(header, self.vreq["key_id"], code)
 
+    def test_canonical_bytes_field_inventory(self):
+        """Guard against Python/Rust canonical-bytes drift (e.g. created_at)."""
+        import hashlib
+        from packager.ledger import Ledger
+
+        author = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        ledger_path = self.root / "ledger3.db"
+        led = Ledger(ledger_path)
+        code = led.gen_codes("test", self.vreq["key_id"])[0]
+        pkg = self._pack(
+            author_private_key=author,
+            code=code,
+            expires_at="2099-12-31",
+            ledger_path=ledger_path,
+        )
+        header, _ = read_header(pkg)
+        canonical = header.canonical_bytes().decode("utf-8")
+        for token in [
+            '"created_at"', '"model_id"', '"block_size"', '"recipients"',
+            '"files"', '"note"', '"license"', '"key_id"', '"code_hash"',
+            '"author_public_key"',
+        ]:
+            self.assertIn(token, canonical, f"canonical bytes missing {token}")
+        self.assertNotIn('"author_signature"', canonical)
 if __name__ == "__main__":
     unittest.main()
-

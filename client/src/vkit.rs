@@ -66,6 +66,8 @@ pub struct Header {
     pub magic: String,
     pub version: u32,
     pub model_id: String,
+    // Keep in sync with packager/vkit.py canonical_bytes(): the Python
+    // packager signs over created_at, so omitting it here breaks verification.
     #[serde(default)]
     pub created_at: String,
     pub block_size: u64,
