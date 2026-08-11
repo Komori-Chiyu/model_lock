@@ -4,13 +4,23 @@ version = "0.1.0"
 edition = "2021"
 description = "ModelLock buyer desktop UI"
 
+[[bin]]
+name = "modelock-client-ui"
+path = "src/main.rs"
+
 [dependencies]
-modelock-client = { path = "../client" }
 eframe = "0.31"
 rfd = "0.15"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
+
+[target.'cfg(windows)'.dependencies]
+modelock-client = { path = "../client" }
+
+[dev-dependencies]
+egui_kittest = { version = "0.31", features = ["snapshot"] }
+image = "0.25"
 
 [profile.release]
 lto = true
