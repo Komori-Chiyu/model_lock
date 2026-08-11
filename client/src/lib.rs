@@ -268,8 +268,9 @@ pub fn mount_model(vkit_path: &Path, code: Option<&str>, cfg: &MountConfig) -> R
     let vts_thread = vts_proc.thread_handle as usize;
     std::mem::forget(vts_proc);
 
-    let auth_handle = vts::duplicate_handle(vts_handle as winapi::um::winnt::HANDLE)?;
-    fs.authorize_vts(vts_pid, auth_handle);
+    let auth_handle =
+        vts::duplicate_handle(vts_handle as winapi::um::winnt::HANDLE)? as usize;
+    fs.authorize_vts(vts_pid, auth_handle as winapi::um::winnt::HANDLE);
     println!("mounted model '{model_id}' (VTS pid={vts_pid})");
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -285,7 +286,7 @@ pub fn mount_model(vkit_path: &Path, code: Option<&str>, cfg: &MountConfig) -> R
         }
         fs.deauthorize();
         unsafe {
-            winapi::um::handleapi::CloseHandle(auth_handle);
+            winapi::um::handleapi::CloseHandle(auth_handle as winapi::um::winnt::HANDLE);
             let _ = dokan::unmount(&mount_mp2);
         }
         let _ = dokan_thread.join();
