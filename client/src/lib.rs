@@ -260,16 +260,25 @@ pub fn mount_model(vkit_path: &Path, code: Option<&str>, cfg: &MountConfig) -> R
             vts::adopt_vts(found.pid, found.handle, cfg.kill_vts_on_unmount)?
         }
     };
-    let auth_handle = vts::duplicate_handle(vts_proc.process_handle)?;
-    fs.authorize_vts(vts_proc.pid, auth_handle);
-    println!("mounted model '{model_id}' (VTS pid={})", vts_proc.pid);
+    // Handles are raw pointers and therefore not Send: convert them to usize
+    // and let the worker own them. VtsProcess is forgotten (no Drop) so it
+    // does not close handles or kill VTS behind our back.
+    let vts_pid = vts_proc.pid;
+    let vts_handle = vts_proc.process_handle as usize;
+    let vts_thread = vts_proc.thread_handle as usize;
+    std::mem::forget(vts_proc);
+
+    let auth_handle = vts::duplicate_handle(vts_handle as winapi::um::winnt::HANDLE)?;
+    fs.authorize_vts(vts_pid, auth_handle);
+    println!("mounted model '{model_id}' (VTS pid={vts_pid})");
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     let mount_mp2 = mount_point_w.clone();
+    let kill = cfg.kill_vts_on_unmount;
     let worker = std::thread::spawn(move || {
         while !stop2.load(Ordering::SeqCst) {
-            if !vts::process_alive(vts_proc.process_handle) {
+            if !vts::process_alive(vts_handle as winapi::um::winnt::HANDLE) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -281,7 +290,15 @@ pub fn mount_model(vkit_path: &Path, code: Option<&str>, cfg: &MountConfig) -> R
         }
         let _ = dokan_thread.join();
         let _ = std::fs::remove_dir(&mount_point);
-        drop(vts_proc); // kills VTS only when configured
+        if kill {
+            vts::kill_vts(vts_handle as winapi::um::winnt::HANDLE);
+        }
+        unsafe {
+            winapi::um::handleapi::CloseHandle(vts_handle as winapi::um::winnt::HANDLE);
+            if vts_thread != 0 {
+                winapi::um::handleapi::CloseHandle(vts_thread as winapi::um::winnt::HANDLE);
+            }
+        }
     });
 
     Ok(MountHandle {
