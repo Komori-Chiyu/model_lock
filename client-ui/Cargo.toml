@@ -1,0 +1,17 @@
+[package]
+name = "modelock-client-ui"
+version = "0.1.0"
+edition = "2021"
+description = "ModelLock buyer desktop UI"
+
+[dependencies]
+modelock-client = { path = "../client" }
+eframe = "0.31"
+rfd = "0.15"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+lto = true
+strip = true

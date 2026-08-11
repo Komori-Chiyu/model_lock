@@ -6,3 +6,8 @@ client/target/
 *.db-shm
 *.vkit
 .state.json
+client-ui/target/
+artist-ui/build/
+artist-ui/dist/
+*.spec
+packaging/output/

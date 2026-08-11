@@ -24,6 +24,12 @@ pub struct ClientState {
 pub struct AcceptedLicense {
     pub model_id: String,
     pub code_hash: String,
+    #[serde(default)]
+    pub vkit_path: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub note: String,
 }
 
 pub fn utcnow_iso() -> String {
@@ -71,11 +77,21 @@ pub fn is_license_accepted(state: &ClientState, model_id: &str, code_hash: &str)
         .any(|a| a.model_id == model_id && a.code_hash == code_hash)
 }
 
-pub fn accept_license(state: &mut ClientState, model_id: &str, code_hash: &str) -> Result<()> {
+pub fn accept_license(
+    state: &mut ClientState,
+    model_id: &str,
+    code_hash: &str,
+    vkit_path: &str,
+    expires_at: Option<String>,
+    note: &str,
+) -> Result<()> {
     if !is_license_accepted(state, model_id, code_hash) {
         state.accepted_licenses.push(AcceptedLicense {
             model_id: model_id.to_string(),
             code_hash: code_hash.to_string(),
+            vkit_path: vkit_path.to_string(),
+            expires_at,
+            note: note.to_string(),
         });
         save_state(state)?;
     }

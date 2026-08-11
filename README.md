@@ -2,6 +2,25 @@
 
 激活码授权 + 一人一码一设备 + 密码学绑定的加密包 + Dokan 按需解密挂载。
 
+## 桌面 Demo（两个带 UI 的软件）
+
+| 软件 | 位置 | 技术 | 功能 |
+|---|---|---|---|
+| 买家端 `modelock-client-ui` | `client-ui/` | Rust + egui | 我的模型 / 添加 .vkit+激活码 / 一键挂载 / 信任作者 / 设置（卸载不杀 VTS） |
+| 画师端 `ModelLockArtist` | `artist-ui/` | Python + PySide6 | 作者密钥 / 发码 / 打包 / 台账 / 日志 |
+
+Windows 构建（见 `packaging/build_windows.ps1`）：
+
+```powershell
+# 买家端
+cd client-ui; cargo build --release
+# 画师端
+python -m pip install PySide6 cryptography pyinstaller
+python -m PyInstaller --noconfirm --onefile --windowed --name ModelLockArtist --paths . artist-ui/main.py
+```
+
+安装包：用 Inno Setup 编译 `packaging/ModelLockClient.iss` / `packaging/ModelLockArtist.iss`（绿色版直接取 exe 即可）。
+
 ## 架构
 
 ```

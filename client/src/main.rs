@@ -1,27 +1,8 @@
-//! ModelLock buyer client.
-//!
-//! Subcommands:
-//!   init          --vreq-out <file>     create the device key and export .vreq
-//!   trust-author  --file author.spki    trust the artist public key (offline)
-//!   mount         --vkit <file> [--code <CODE>] [--vts <exe>]
-//!                                        verify offline license, mount, launch VTS
-//!   activate      --server <url> --code <c>   (legacy online mode)
-
-mod auth;
-mod device_key;
-mod util;
-mod vfs;
-mod vkit;
-mod vts;
+//! ModelLock buyer client CLI (uses the shared core library).
 
 use anyhow::{bail, Context, Result};
-use dokan::{FileSystemMounter, MountFlags, MountOptions};
+use modelock_client::{self as core, LaunchMode, MountConfig};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use widestring::U16CString;
-
-use rsa::pkcs8::DecodePublicKey;
 
 fn usage() {
     eprintln!(
@@ -30,7 +11,8 @@ fn usage() {
          init          --vreq-out <file>\n\
          trust-author  --file author.spki\n\
          mount         --vkit <file.vkit> [--code <CODE>] [--vts <VTube Studio.exe>]\n\
-                       [--launch-mode steam|nosteam]   (default: steam)\n\
+                       [--launch-mode steam|nosteam] [--kill-vts]\n\
+         models        (list accepted models)\n\
          activate      --server <url> --code <CODE>   (legacy online)"
     );
 }
@@ -44,187 +26,66 @@ fn arg_value(args: &[String], name: &str) -> Option<String> {
 
 fn cmd_init(args: &[String]) -> Result<()> {
     let out = arg_value(args, "--vreq-out").context("--vreq-out is required")?;
-    let key = device_key::open_or_create()?;
-    device_key::write_vreq(&key, std::path::Path::new(&out))?;
-    println!("key_id={}", key.key_id);
+    let info = core::init_device(std::path::Path::new(&out))?;
+    println!("key_id={}", info.key_id);
     println!("wrote request file: {out}");
+    Ok(())
+}
+
+fn cmd_trust_author(args: &[String]) -> Result<()> {
+    let file = arg_value(args, "--file").context("--file is required")?;
+    let key_id = core::trust_author_file(std::path::Path::new(&file))?;
+    println!("trusted artist key: {key_id}");
+    Ok(())
+}
+
+fn cmd_models(_args: &[String]) -> Result<()> {
+    for m in core::list_models()? {
+        let exp = m.expires_at.clone().unwrap_or_else(|| "-".to_string());
+        println!("{} | code={} | expires={} | {}", m.model_id, &m.code_hash[..8.min(m.code_hash.len())], exp, m.vkit_path);
+    }
     Ok(())
 }
 
 fn cmd_activate(args: &[String]) -> Result<()> {
     let server = arg_value(args, "--server").context("--server is required")?;
     let code = arg_value(args, "--code").context("--code is required")?;
-    let key = device_key::open_or_create()?;
-    let state = auth::activate(&server, &code, &key)?;
-    auth::save_state(&state)?;
+    let key = core::device_key::open_or_create()?;
+    let state = core::auth::activate(&server, &code, &key)?;
+    core::auth::save_state(&state)?;
     println!("activated: model bound to device {}", state.device_id);
     Ok(())
 }
 
-fn cmd_trust_author(args: &[String]) -> Result<()> {
-    let file = arg_value(args, "--file").context("--file is required (author.spki from packager export-author-key)")?;
-    let text = std::fs::read_to_string(&file)?;
-    let b64 = text.trim();
-    let der = util::b64d(b64).context("author key file must contain base64 DER SPKI")?;
-    rsa::RsaPublicKey::from_public_key_der(&der).context("not a valid RSA public key")?;
-    let mut state = auth::load_state()?.unwrap_or_default();
-    state.author_spki_b64 = util::b64e(&der);
-    auth::save_state(&state)?;
-    println!("trusted artist key: {}", device_key::key_id_of_spki(&der));
-    Ok(())
-}
-
-fn sanitize_model_id(raw: &str) -> String {
-    let clean: String = raw
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let clean = clean.trim_matches('_');
-    if clean.is_empty() {
-        "model".to_string()
-    } else {
-        clean.to_string()
-    }
-}
-
 fn cmd_mount(args: &[String]) -> Result<()> {
     let vkit_path = arg_value(args, "--vkit").context("--vkit is required")?;
-    let vts_override = arg_value(args, "--vts");
     let code_arg = arg_value(args, "--code");
-    let launch_mode = arg_value(args, "--launch-mode").unwrap_or_else(|| "steam".to_string());
-
-    let mut state = auth::load_state()?.unwrap_or_default();
-    let key = device_key::open_or_create()?;
-    let pkg = Arc::new(vkit::Package::open(std::path::Path::new(&vkit_path), &key)?);
-    log::info!(
-        "package {}: {} files, {} bytes protected",
-        pkg.header.model_id,
-        pkg.header.files.len(),
-        pkg.total_protected_bytes()
-    );
-
-    // Offline license verification (no server).
-    if pkg.header.license.is_some() {
-        let spki_b64 = state.author_spki_b64.clone();
-        if spki_b64.is_empty() {
-            bail!(
-                "this package is licensed and requires trusting the artist key first: run `trust-author --file author.spki`"
-            );
-        }
-        let author_spki = util::b64d(&spki_b64).context("stored author key is invalid")?;
-        let lic = pkg.header.license.as_ref().unwrap();
-        let cached = auth::is_license_accepted(&state, &pkg.header.model_id, &lic.code_hash);
-        let code = if cached {
-            None
-        } else {
-            Some(code_arg.context("this package requires an activation code: pass --code <CODE>")?)
-        };
-        vkit::verify_package_license(&pkg.header, &author_spki, &key.key_id, code.as_deref())?;
-        if code.is_some() {
-            auth::accept_license(&mut state, &pkg.header.model_id, &lic.code_hash)?;
-            state = auth::load_state()?.unwrap_or_default();
-        }
-        println!("offline license OK (model {})", pkg.header.model_id);
-    } else {
-        log::warn!("package has no offline license; skipping activation check");
-    }
-
-    // Mount point: VTS model directory (created before VTS starts).
-    let vts_exe = match vts_override {
-        Some(p) => PathBuf::from(p),
-        None => vts::find_vts()?,
+    let vts_override = arg_value(args, "--vts").map(PathBuf::from);
+    let launch_mode = match arg_value(args, "--launch-mode").as_deref() {
+        Some("nosteam") => LaunchMode::NoSteam,
+        _ => LaunchMode::Steam,
     };
-    log::info!("VTS executable: {}", vts_exe.display());
-    let model_id = sanitize_model_id(&pkg.header.model_id);
-    let mount_point = vts_exe
-        .parent()
-        .context("VTS exe has no parent directory")?
-        .join("VTube Studio_Data")
-        .join("StreamingAssets")
-        .join("Live2DModels")
-        .join(&model_id);
-    if mount_point.exists() {
-        let non_empty = std::fs::read_dir(&mount_point)?.next().is_some();
-        if non_empty {
-            bail!("mount directory already exists and is not empty: {}", mount_point.display());
-        }
-        std::fs::remove_dir(&mount_point)?;
-    }
-    std::fs::create_dir_all(&mount_point)?;
-    log::info!("mount point: {}", mount_point.display());
-
-    let fs = Arc::new(vfs::ModelFs::new(pkg));
-    let mount_point_str = mount_point.to_string_lossy().to_string();
-    let mount_point_w = U16CString::from_str(&mount_point_str)?;
-
-    // Dokan mount() blocks the calling thread until unmount, so the volume
-    // lives on a dedicated thread while the main thread launches VTS.
-    let mount_fs = fs.clone();
-    let mount_mp = mount_point_w.clone();
-    let mount_thread = std::thread::spawn(move || {
-        dokan::init();
-        let options = MountOptions {
-            single_thread: false,
-            flags: MountFlags::ALT_STREAM,
-            ..Default::default()
-        };
-        let mut mounter = FileSystemMounter::new(&*mount_fs, &mount_mp, &options);
-        match mounter.mount() {
-            Ok(_volume) => log::info!("volume unmounted"),
-            Err(e) => log::error!("Dokan mount failed: {e}"),
-        }
-        dokan::shutdown();
-    });
-    // Give Dokan a moment to mount before VTS scans the model directory.
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    log::info!("volume mounted");
-
-    // Launch VTS. Default (and enforced) mode: via Steam, then monitor for the
-    // newly spawned VTS process and only authorize it when its parent is
-    // steam.exe. `nosteam` remains for development only.
-    let vts_proc = if launch_mode == "nosteam" {
-        log::warn!("launching VTS with -nosteam (dev mode; Steam features unavailable)");
-        vts::launch_vts_nosteam(&vts_exe)?
-    } else {
-        let existing = vts::collect_vts_pids();
-        vts::request_steam_launch()?;
-        println!("launching VTube Studio via Steam (app {}), waiting for it to start...", vts::STEAM_APPID);
-        let found = vts::wait_for_steam_vts(&existing, 120)?;
-        vts::adopt_vts(found.pid, found.handle)?
+    let kill_vts = args.iter().any(|a| a == "--kill-vts");
+    let cfg = MountConfig {
+        vts_override,
+        launch_mode,
+        kill_vts_on_unmount: kill_vts,
     };
-    let auth_handle = vts::duplicate_handle(vts_proc.process_handle)?;
-    fs.authorize_vts(vts_proc.pid, auth_handle);
-    println!(
-        "mounted model '{}' and authorized VTS pid={}; press Ctrl+C or close VTS to unmount",
-        model_id, vts_proc.pid
-    );
 
-    let stop = Arc::new(AtomicBool::new(false));
+    let mut handle = core::mount_model(std::path::Path::new(&vkit_path), code_arg.as_deref(), &cfg)?;
+    println!("mounted; press Ctrl+C to unmount (VTS will keep running)");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let stop = stop.clone();
-        ctrlc::set_handler(move || stop.store(true, Ordering::SeqCst))
+        ctrlc::set_handler(move || stop.store(true, std::sync::atomic::Ordering::SeqCst))
             .context("failed to install Ctrl+C handler")?;
     }
-
-    while !stop.load(Ordering::SeqCst) && vts::process_alive(vts_proc.process_handle) {
-        std::thread::sleep(std::time::Duration::from_millis(500));
+    while !stop.load(std::sync::atomic::Ordering::SeqCst) && handle.is_running() {
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
-
-    log::info!("unmounting");
-    fs.deauthorize();
-    unsafe {
-        winapi::um::handleapi::CloseHandle(auth_handle);
-        let _ = dokan::unmount(&mount_point_w);
-    }
-    let _ = mount_thread.join();
-    let _ = std::fs::remove_dir(&mount_point);
-    log::info!("done");
+    handle.stop();
+    handle.wait()?;
+    println!("unmounted");
     Ok(())
 }
 
@@ -240,6 +101,7 @@ fn main() -> Result<()> {
         "trust-author" => cmd_trust_author(&args[2..]),
         "activate" => cmd_activate(&args[2..]),
         "mount" => cmd_mount(&args[2..]),
+        "models" => cmd_models(&args[2..]),
         other => {
             usage();
             bail!("unknown subcommand: {other}")

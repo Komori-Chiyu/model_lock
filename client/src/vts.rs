@@ -357,19 +357,22 @@ pub struct VtsProcess {
     pub process_handle: HANDLE,
     pub thread_handle: HANDLE,
     job_handle: HANDLE,
-    job_assigned: bool,
+    kill_on_drop: bool,
 }
 
 impl Drop for VtsProcess {
     fn drop(&mut self) {
         unsafe {
-            if !self.job_handle.is_null() {
-                // Closing the job kills the process tree when assigned.
+            if self.kill_on_drop {
+                if !self.job_handle.is_null() {
+                    // Closing the kill-job terminates the process tree.
+                    CloseHandle(self.job_handle);
+                } else {
+                    TerminateProcess(self.process_handle, 1);
+                }
+            } else if !self.job_handle.is_null() {
+                // Behavior B: leave VTS running; release handles only.
                 CloseHandle(self.job_handle);
-            }
-            if !self.job_assigned {
-                // Steam-launched process may already be in Steam's job; force kill.
-                TerminateProcess(self.process_handle, 1);
             }
             if !self.process_handle.is_null() {
                 CloseHandle(self.process_handle);
@@ -406,7 +409,16 @@ fn create_kill_job() -> Result<HANDLE> {
 /// Adopt an already-running (Steam-launched) VTS process.  Tries to put it in
 /// a kill-on-close job; when Steam already placed it in a job, falls back to
 /// TerminateProcess on cleanup.
-pub fn adopt_vts(pid: u32, handle: HANDLE) -> Result<VtsProcess> {
+pub fn adopt_vts(pid: u32, handle: HANDLE, kill_on_drop: bool) -> Result<VtsProcess> {
+    if !kill_on_drop {
+        return Ok(VtsProcess {
+            pid,
+            process_handle: handle,
+            thread_handle: ptr::null_mut(),
+            job_handle: ptr::null_mut(),
+            kill_on_drop: false,
+        });
+    }
     let job = create_kill_job()?;
     let assigned = unsafe { AssignProcessToJobObject(job, handle) };
     if assigned == 0 {
@@ -417,7 +429,7 @@ pub fn adopt_vts(pid: u32, handle: HANDLE) -> Result<VtsProcess> {
             process_handle: handle,
             thread_handle: ptr::null_mut(),
             job_handle: ptr::null_mut(),
-            job_assigned: false,
+            kill_on_drop: true,
         })
     } else {
         Ok(VtsProcess {
@@ -425,14 +437,14 @@ pub fn adopt_vts(pid: u32, handle: HANDLE) -> Result<VtsProcess> {
             process_handle: handle,
             thread_handle: ptr::null_mut(),
             job_handle: job,
-            job_assigned: true,
+            kill_on_drop: true,
         })
     }
 }
 
 /// Launch VTS directly with `-nosteam` (kept for dev/test only; the default
 /// and supported mode is the Steam launch).
-pub fn launch_vts_nosteam(exe: &Path) -> Result<VtsProcess> {
+pub fn launch_vts_nosteam(exe: &Path, kill_on_drop: bool) -> Result<VtsProcess> {
     let cmd = format!("\"{}\" -nosteam", exe.display());
     let mut cmd_w: Vec<u16> = cmd.encode_utf16().collect();
     cmd_w.push(0);
@@ -456,25 +468,36 @@ pub fn launch_vts_nosteam(exe: &Path) -> Result<VtsProcess> {
     if ok == 0 {
         bail!("CreateProcessW failed: {}", std::io::Error::last_os_error());
     }
-    let job = create_kill_job()?;
-    let assign = unsafe { AssignProcessToJobObject(job, pi.hProcess) };
-    if assign == 0 {
-        unsafe {
-            TerminateProcess(pi.hProcess, 1);
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-            CloseHandle(job);
+    if kill_on_drop {
+        let job = create_kill_job()?;
+        let assign = unsafe { AssignProcessToJobObject(job, pi.hProcess) };
+        if assign == 0 {
+            unsafe {
+                TerminateProcess(pi.hProcess, 1);
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+                CloseHandle(job);
+            }
+            bail!("AssignProcessToJobObject failed: {}", std::io::Error::last_os_error());
         }
-        bail!("AssignProcessToJobObject failed: {}", std::io::Error::last_os_error());
+        unsafe { ResumeThread(pi.hThread) };
+        Ok(VtsProcess {
+            pid: pi.dwProcessId,
+            process_handle: pi.hProcess,
+            thread_handle: pi.hThread,
+            job_handle: job,
+            kill_on_drop: true,
+        })
+    } else {
+        unsafe { ResumeThread(pi.hThread) };
+        Ok(VtsProcess {
+            pid: pi.dwProcessId,
+            process_handle: pi.hProcess,
+            thread_handle: pi.hThread,
+            job_handle: ptr::null_mut(),
+            kill_on_drop: false,
+        })
     }
-    unsafe { ResumeThread(pi.hThread) };
-    Ok(VtsProcess {
-        pid: pi.dwProcessId,
-        process_handle: pi.hProcess,
-        thread_handle: pi.hThread,
-        job_handle: job,
-        job_assigned: true,
-    })
 }
 
 /// Open a handle to a PID for authorization checks (prevents PID reuse).
