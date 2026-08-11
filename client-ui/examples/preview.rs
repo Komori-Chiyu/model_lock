@@ -102,17 +102,6 @@ fn snapshot(page: Page, name: &str, dir: &str) -> anyhow::Result<()> {
     let font_image = atlas.lock().image().clone();
     let aw = font_image.size[0];
     let ah = font_image.size[1];
-    let nonzero = font_image.pixels.iter().filter(|v| **v > 0.0).count();
-    println!("atlas {aw}x{ah} pixels={} nonzero={}", font_image.pixels.len(), nonzero);
-    let mut meshes = 0usize;
-    let mut tris = 0usize;
-    for clip in &clipped {
-        if let epaint::Primitive::Mesh(mesh) = &clip.primitive {
-            meshes += 1;
-            tris += mesh.indices.len() / 3;
-        }
-    }
-    println!("meshes={meshes} triangles={tris}");
 
     let mut buf = vec![0u8; W * H * 4];
     for i in 0..W * H {
@@ -133,7 +122,6 @@ fn snapshot(page: Page, name: &str, dir: &str) -> anyhow::Result<()> {
             let c = mesh.vertices[tri[2] as usize].pos;
             area += ((b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)).abs() * 0.5;
         }
-        let mut mw = 0u64;
         for tri in mesh.indices.chunks_exact(3) {
             let i0 = tri[0] as usize;
             let i1 = tri[1] as usize;
@@ -150,7 +138,6 @@ fn snapshot(page: Page, name: &str, dir: &str) -> anyhow::Result<()> {
                 ah,
             );
             written += n;
-            mw += n;
         }
         println!(
             "mesh[{mi}] texture={:?} verts={} tris={} area={area:.1} written={mw}",
@@ -159,7 +146,6 @@ fn snapshot(page: Page, name: &str, dir: &str) -> anyhow::Result<()> {
             mesh.indices.len() / 3
         );
     }
-    println!("pixels written={written}");
     let path = format!("{dir}/{name}.png");
     image::save_buffer(&path, &buf, W as u32, H as u32, image::ColorType::Rgba8)?;
     println!("saved {path}");
