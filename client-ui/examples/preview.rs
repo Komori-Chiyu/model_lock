@@ -22,7 +22,6 @@ fn sample(px: &[f32], w: usize, h: usize, u: f32, v: f32) -> f32 {
     px[i].clamp(0.0, 1.0)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn raster_tri(
     buf: &mut [u8],
     w: usize,
@@ -33,15 +32,14 @@ fn raster_tri(
     atlas: &[f32],
     aw: usize,
     ah: usize,
-) -> u64 {
+) {
     let a = v0.pos;
     let b = v1.pos;
     let c = v2.pos;
     let det = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     if det.abs() < 1e-6 {
-        return 0;
+        return;
     }
-    let mut written = 0u64;
     let x0 = a.x.min(b.x).min(c.x).floor().max(0.0) as usize;
     let x1 = (a.x.max(b.x).max(c.x).ceil() as usize).min(w);
     let y0 = a.y.min(b.y).min(c.y).floor().max(0.0) as usize;
@@ -52,7 +50,7 @@ fn raster_tri(
             let pa = Pos2::new(p.x - a.x, p.y - a.y);
             let ba = Pos2::new(b.x - a.x, b.y - a.y);
             let ca = Pos2::new(c.x - a.x, c.y - a.y);
-            // p = a + u*ba + v*ca  =>  u = cross(pa, ca)/det, v = cross(ba, pa)/det
+            // p = a + u*ba + v*ca
             let u = (pa.x * ca.y - pa.y * ca.x) / det;
             let v = (ba.x * pa.y - ba.y * pa.x) / det;
             let ww = 1.0 - u - v;
@@ -80,10 +78,8 @@ fn raster_tri(
             buf[idx] = (cr * 255.0 * a_eff + bg_r * (1.0 - a_eff)).round() as u8;
             buf[idx + 1] = (cg * 255.0 * a_eff + bg_g * (1.0 - a_eff)).round() as u8;
             buf[idx + 2] = (cb * 255.0 * a_eff + bg_b * (1.0 - a_eff)).round() as u8;
-            written += 1;
         }
     }
-    written
 }
 
 fn snapshot(page: Page, name: &str, dir: &str) -> anyhow::Result<()> {
@@ -110,23 +106,15 @@ fn snapshot(page: Page, name: &str, dir: &str) -> anyhow::Result<()> {
         buf[i * 4 + 2] = 252;
         buf[i * 4 + 3] = 255;
     }
-    let mut written = 0u64;
-    for (mi, clip) in clipped.iter().enumerate() {
+    for clip in &clipped {
         let epaint::Primitive::Mesh(mesh) = &clip.primitive else {
             continue;
         };
-        let mut area = 0.0f32;
-        for tri in mesh.indices.chunks_exact(3) {
-            let a = mesh.vertices[tri[0] as usize].pos;
-            let b = mesh.vertices[tri[1] as usize].pos;
-            let c = mesh.vertices[tri[2] as usize].pos;
-            area += ((b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)).abs() * 0.5;
-        }
         for tri in mesh.indices.chunks_exact(3) {
             let i0 = tri[0] as usize;
             let i1 = tri[1] as usize;
             let i2 = tri[2] as usize;
-            let n = raster_tri(
+            raster_tri(
                 &mut buf,
                 W,
                 H,
@@ -137,14 +125,7 @@ fn snapshot(page: Page, name: &str, dir: &str) -> anyhow::Result<()> {
                 aw,
                 ah,
             );
-            written += n;
         }
-        println!(
-            "mesh[{mi}] texture={:?} verts={} tris={} area={area:.1} written={mw}",
-            mesh.texture_id,
-            mesh.vertices.len(),
-            mesh.indices.len() / 3
-        );
     }
     let path = format!("{dir}/{name}.png");
     image::save_buffer(&path, &buf, W as u32, H as u32, image::ColorType::Rgba8)?;
