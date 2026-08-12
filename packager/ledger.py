@@ -55,15 +55,31 @@ class Ledger:
         with self.conn:
             self.conn.execute("UPDATE codes SET status='used' WHERE code = ?", (code,))
 
-    def list_codes(self, model_id: Optional[str] = None) -> List[sqlite3.Row]:
+    def list_codes(
+        self,
+        model_id: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+    ) -> List[sqlite3.Row]:
+        """列出授权码；start/end 为 "YYYY-MM-DD"（含端点），按 created_at 过滤。"""
         self.conn.row_factory = sqlite3.Row
+        conds, args = [], []
         if model_id:
-            rows = self.conn.execute(
-                "SELECT * FROM codes WHERE model_id = ? ORDER BY created_at", (model_id,)
-            ).fetchall()
-        else:
-            rows = self.conn.execute("SELECT * FROM codes ORDER BY created_at").fetchall()
-        return rows
+            conds.append("model_id = ?")
+            args.append(model_id)
+        if start:
+            conds.append("created_at >= ?")
+            args.append(start)
+        if end:
+            from datetime import date, timedelta
+
+            end_day = date.fromisoformat(end) + timedelta(days=1)
+            conds.append("created_at < ?")
+            args.append(end_day.isoformat())
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        return self.conn.execute(
+            f"SELECT * FROM codes{where} ORDER BY created_at", args
+        ).fetchall()
 
     def validate_and_consume(self, code: str, key_id: str) -> None:
         row = self.get(code)

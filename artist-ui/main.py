@@ -2,7 +2,9 @@
 """ModelLock 画师端 demo（PySide6）：发码 / 打包 / 密钥 / 台账。"""
 
 import base64
+import csv
 import datetime
+import os
 import sys
 from pathlib import Path
 
@@ -14,14 +16,48 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from packager.ledger import Ledger
 from packager.vkit import load_vreq, pack_model
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt, QSharedMemory
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog, QMessageBox,
     QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QComboBox,
-    QDateEdit, QGroupBox, QHeaderView,
+    QGroupBox, QHeaderView, QSpinBox, QCheckBox, QDateEdit,
 )
-from PySide6.QtCore import QDate
+
+def _expires_from_term(years: int, months: int, perpetual: bool) -> str | None:
+    """把「N 年 M 月」换算成到期日(yyyy-MM-dd);永久返回 None。
+
+    月份叠加进位,日期超出当月天数时截断到月末(如 2/29 + 1 年 → 2/28)。
+    """
+    if perpetual:
+        return None
+    if years < 0 or months < 0:
+        raise ValueError("期限不能为负数")
+    if years == 0 and months == 0:
+        raise ValueError("期限至少为 1 个月")
+    import calendar
+    today = datetime.date.today()
+    total_months = today.year * 12 + (today.month - 1) + years * 12 + months
+    year = total_months // 12
+    month = total_months % 12 + 1
+    day = min(today.day, calendar.monthrange(year, month)[1])
+    return datetime.date(year, month, day).strftime("%Y-%m-%d")
+
+
+def _default_ledger_path() -> Path:
+    """台账数据库:工作目录可写则用 ./license_records.db(开发时与仓库一致),
+    否则(如装在 Program Files)落到 %LOCALAPPDATA%\\ModelLockArtist。"""
+    try:
+        probe = Path.cwd() / ".ml_write_probe"
+        probe.write_bytes(b"")
+        probe.unlink()
+        return Path("license_records.db")
+    except OSError:
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+        d = base / "ModelLockArtist"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "license_records.db"
+
 
 QSS = """
 QWidget { background-color: #fff7fa; color: #463c50; font-size: 14px; }
@@ -53,7 +89,8 @@ class ArtistApp(QMainWindow):
         self.setWindowTitle("ModelLock 画师端 · demo")
         self.resize(960, 680)
         self.author_key: rsa.RSAPrivateKey | None = None
-        self.ledger = Ledger(Path("license_records.db"))
+        self.ledger_path = _default_ledger_path()
+        self.ledger = Ledger(self.ledger_path)
         self.current_vreq = None
 
         tabs = QTabWidget()
@@ -73,6 +110,7 @@ class ArtistApp(QMainWindow):
         lay.addWidget(self.log_box)
         self.setCentralWidget(central)
         self.log("欢迎使用 ModelLock 画师端 demo（完全离线）")
+        self.log(f"台账: {self.ledger_path}")
 
     # ---------- helpers ----------
     def log(self, msg):
@@ -232,10 +270,15 @@ class ArtistApp(QMainWindow):
         r2 = QHBoxLayout()
         self.pack_code = QLineEdit()
         self.pack_code.setPlaceholderText("激活码（gen 时生成的 ML-XXXX）")
-        self.pack_expires = QDateEdit()
-        self.pack_expires.setCalendarPopup(True)
-        self.pack_expires.setDate(QDate.currentDate().addYears(1))
-        self.pack_expires.setDisplayFormat("yyyy-MM-dd")
+        self.pack_perpetual = QCheckBox("永久")
+        self.pack_years = QSpinBox()
+        self.pack_years.setRange(0, 99)
+        self.pack_years.setValue(10)  # 默认 10 年
+        self.pack_months = QSpinBox()
+        self.pack_months.setRange(0, 11)
+        self.pack_months.setValue(0)
+        self.pack_perpetual.toggled.connect(
+            lambda on: (self.pack_years.setDisabled(on), self.pack_months.setDisabled(on)))
         self.pack_out = QLineEdit()
         self.pack_out.setPlaceholderText("输出 .vkit 路径")
         b3 = QPushButton("选择")
@@ -244,8 +287,12 @@ class ArtistApp(QMainWindow):
         go.clicked.connect(self.do_pack)
         r2.addWidget(QLabel("激活码"))
         r2.addWidget(self.pack_code)
-        r2.addWidget(QLabel("有效期"))
-        r2.addWidget(self.pack_expires)
+        r2.addWidget(QLabel("期限"))
+        r2.addWidget(self.pack_perpetual)
+        r2.addWidget(self.pack_years)
+        r2.addWidget(QLabel("年"))
+        r2.addWidget(self.pack_months)
+        r2.addWidget(QLabel("月"))
         r2.addWidget(QLabel("输出"))
         r2.addWidget(self.pack_out)
         r2.addWidget(b3)
@@ -282,7 +329,13 @@ class ArtistApp(QMainWindow):
             model_dir = Path(self.pack_model_dir.text().strip())
             out = Path(self.pack_out.text().strip())
             code = self.pack_code.text().strip()
-            expires = self.pack_expires.date().toString("yyyy-MM-dd")
+            try:
+                expires = _expires_from_term(
+                    self.pack_years.value(), self.pack_months.value(),
+                    self.pack_perpetual.isChecked())
+            except ValueError as e:
+                self.warn("提示", str(e))
+                return
             if not vreq_path.exists() or not model_dir.is_dir() or not out:
                 self.warn("提示", "vreq / 模型目录 / 输出路径 必填")
                 return
@@ -294,10 +347,11 @@ class ArtistApp(QMainWindow):
                 model_dir, [vreq], model_id=self.code_model.text().strip() or model_dir.name,
                 output=out, note=self.code_note.text().strip() or "",
                 author_private_key=self.author_key, code=code, expires_at=expires,
-                ledger_path=Path("license_records.db"),
+                ledger_path=self.ledger_path,
             )
-            self.log(f"打包成功 -> {out}（买家 {vreq['key_id']}）")
-            self.info("打包成功", f"已生成 {out}\n请连同激活码 {code} 一起发给买家。")
+            term = "永久" if expires is None else f"至 {expires}"
+            self.log(f"打包成功 -> {out}（买家 {vreq['key_id']}，{term}）")
+            self.info("打包成功", f"已生成 {out}\n请连同激活码 {code} 一起发给买家。\n期限: {term}")
         except Exception as e:
             self.warn("打包失败", str(e))
 
@@ -307,9 +361,31 @@ class ArtistApp(QMainWindow):
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["激活码", "模型", "买家key_id", "状态", "备注"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        row = QHBoxLayout()
+        self.ledger_filter_check = QCheckBox("按时间范围导出")
+        today = QDate.currentDate()
+        self.ledger_from = QDateEdit(today.addYears(-1))
+        self.ledger_from.setCalendarPopup(True)
+        self.ledger_to = QDateEdit(today)
+        self.ledger_to.setCalendarPopup(True)
+        self.ledger_filter_check.toggled.connect(
+            lambda on: (self.ledger_from.setEnabled(on), self.ledger_to.setEnabled(on)))
+        self.ledger_from.setEnabled(False)
+        self.ledger_to.setEnabled(False)
+        export_btn = QPushButton("📤 导出 CSV")
+        export_btn.clicked.connect(self.export_ledger)
         refresh = QPushButton("刷新")
         refresh.clicked.connect(self.refresh_ledger)
-        lay.addWidget(refresh)
+        row.addWidget(self.ledger_filter_check)
+        row.addWidget(QLabel("从"))
+        row.addWidget(self.ledger_from)
+        row.addWidget(QLabel("到"))
+        row.addWidget(self.ledger_to)
+        row.addStretch(1)
+        row.addWidget(export_btn)
+        row.addWidget(refresh)
+        lay.addLayout(row)
         lay.addWidget(self.table)
         self.refresh_ledger()
         return box
@@ -321,10 +397,43 @@ class ArtistApp(QMainWindow):
             for j, val in enumerate([r["code"], r["model_id"], r["key_id"], r["status"], r["note"]]):
                 self.table.setItem(i, j, QTableWidgetItem(str(val)))
 
+    def export_ledger(self):
+        """导出台账为 CSV(UTF-8 BOM,Excel 直接打开),可选按生成时间范围过滤。"""
+        start = end = None
+        if self.ledger_filter_check.isChecked():
+            start = self.ledger_from.date().toString("yyyy-MM-dd")
+            end = self.ledger_to.date().toString("yyyy-MM-dd")
+            if start > end:
+                self.warn("提示", "开始日期不能晚于结束日期")
+                return
+        rows = self.ledger.list_codes(start=start, end=end)
+        default_name = f"台账_{datetime.date.today():%Y%m%d}" + ("" if start is None else f"_{start}_{end}") + ".csv"
+        path, _ = QFileDialog.getSaveFileName(self, "导出台账", default_name, "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+                w = csv.writer(fh)
+                w.writerow(["激活码", "模型", "买家key_id", "状态", "备注", "生成时间(UTC)"])
+                for r in rows:
+                    w.writerow([r["code"], r["model_id"], r["key_id"],
+                                r["status"], r["note"], r["created_at"]])
+            self.log(f"已导出台账 {len(rows)} 条 -> {path}")
+            self.info("导出成功", f"共 {len(rows)} 条记录\n已保存到:\n{path}")
+        except Exception as e:
+            self.warn("导出失败", str(e))
+
 
 def main():
     app = QApplication(sys.argv)
     app.setStyleSheet(QSS)
+
+    # 单实例:第二个实例直接提示并退出(进程退出时系统自动释放锁)。
+    lock = QSharedMemory("ModelLockArtistSingleton")
+    if not lock.create(1):
+        QMessageBox.critical(None, "ModelLock 画师端", "ModelLock 画师端已经在运行中。")
+        return 1
+
     win = ArtistApp()
     win.show()
     sys.exit(app.exec())
