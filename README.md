@@ -1,25 +1,63 @@
-# ModelLock —— 更强 VTS 模型锁（完整实现）
+# 星零集模型锁（ModelLock）
 
-激活码授权 + 一人一码一设备 + 密码学绑定的加密包 + Dokan 按需解密挂载。
+VTube Studio 模型保护方案：激活码授权 · 一人一码一设备 · 密码学绑定的加密包（`.vkit`）· Dokan 按需解密挂载。
 
-## 桌面 Demo（两个带 UI 的软件）
+## 📥 下载安装
 
-| 软件 | 位置 | 技术 | 功能 |
-|---|---|---|---|
-| 买家端 `modelock-client-ui` | `client-ui/` | Rust + egui | 我的模型 / 添加 .vkit+激活码 / 一键挂载 / 信任作者 / 设置（卸载不杀 VTS） |
-| 画师端 `ModelLockArtist` | `artist-ui/` | Python + PySide6 | 作者密钥 / 发码 / 打包 / 台账 / 日志 |
+两个桌面应用（**仅 Windows**，Windows 10/11 64 位）请在 [Releases](../../releases) 页面下载：
 
-Windows 构建（见 `packaging/build_windows.ps1`）：
+| 安装包 | 应用 | 用途 |
+|---|---|---|
+| `ModelLockClient-Setup.exe` | 星零集模型锁（买家端） | 导入 `.vkit`、输入激活码、挂载给 VTube Studio |
+| `ModelLockArtist-Setup.exe` | 星零集模型锁-画师端 | 生成作者密钥、发激活码、打包模型、管理台账 |
 
-```powershell
-# 买家端
-cd client-ui; cargo build --release
-# 画师端
-python -m pip install PySide6 cryptography pyinstaller
-python -m PyInstaller --noconfirm --onefile --windowed --name ModelLockArtist --paths . artist-ui/main.py
-```
+> 安装包已内置 Dokan 文件系统运行时（静默安装），**无需手动安装任何运行库**。
+> 过期校验使用联网时间（HTTPS 获取，不信任系统时钟），**使用前请确保电脑能联网**。
 
-安装包：用 Inno Setup 编译 `packaging/ModelLockClient.iss` / `packaging/ModelLockArtist.iss`（绿色版直接取 exe 即可）。
+## 系统要求（仅 Windows）
+
+- **Windows 10 / 11 64 位**（不支持 32 位、macOS、Linux 客户端）
+- **Steam**：挂载时需保持运行
+- **VTube Studio**：通过 Steam 安装（Steam 内免费下载），挂载时会由客户端自动拉起
+- **网络连接**：授权与过期校验依赖联网时间
+
+## 使用注意事项
+
+**买家端**
+
+- 挂载前需先**关闭**正在运行的 VTube Studio，并确认 **Steam 已打开**（客户端会检测并提示，不满足不会继续挂载）。
+- 只授权本次由 Steam 启动的 VTube Studio 实例访问模型；手动双击或绕过 Steam 启动的实例不会被授权。
+- 激活码**一人一码、绑定本机设备**：同一激活码换机器无效；`.vkit` 已绑定买家设备公钥，转发给他人也无法使用。
+- 模型有效期支持「永久」或「N 年 M 月」（默认 10 年），到期后需联系画师重新打包续期。
+- 卸载时默认不关闭 VTube Studio（设置里可勾选“卸载时同时关闭”）。
+- 程序为单实例：重复打开会提示并退出。
+
+**画师端**
+
+- 作者私钥（`author.pem`）**切勿发给买家**；买家只需要公钥文件 `author.spki`。
+- 激活码台账保存在本地 SQLite（`license_records.db`），支持按时间范围导出 CSV。
+- 打包时填写的期限即为许可期限，过期校验在买家端通过联网时间执行。
+
+**安全边界（务必阅读）**
+
+- 本方案的目标是抬高门槛：防随手转发（`.vkit` 绑定买家公钥）、防扒包工具（读取预算 + 目录枚举拒绝）、防共享激活码（设备绑定）。
+- 无法防住“完全控制本机”的专业攻击者：模型渲染时内存/显存中必然存在明文。
+
+## 快速开始
+
+### 买家
+
+1. 安装并打开买家端，在「信任作者」页导入画师发来的 `author.spki`；
+2. 点击「导出授权请求」，得到 `.vreq` 文件发给画师；
+3. 收到画师返回的 `.vkit` 和激活码后，在「我的模型」页添加 `.vkit`，输入激活码并挂载；
+4. 挂载成功后 VTube Studio 自动通过 Steam 启动，模型出现在其 Live2DModels 列表中。
+
+### 画师
+
+1. 「作者密钥」页生成新密钥（或加载已有 `author.pem`），导出 `author.spki` 发给买家；
+2. 收到买家 `.vreq` 后，在「授权码」页读取其中的 key_id 并生成激活码（可选「永久」或 N 年 M 月期限）；
+3. 「打包模型」页选择模型目录、买家 `.vreq`、激活码与期限，输出 `.vkit`；
+4. 把 `.vkit` 和激活码发给买家；「台账」页可随时导出发码记录。
 
 ## 架构
 
@@ -32,90 +70,48 @@ python -m PyInstaller --noconfirm --onefile --windowed --name ModelLockArtist --
       │ 激活码/设备绑定/令牌               ▼
       ▼                            ┌──────────────┐
 ┌─────────────┐   /api/*          │ 授权服务器     │
-│ 授权服务器   │ ◀────────────────  │ (stdlib+SQLite)│
+│ 授权服务器   │ ◀────────────────  │ (可选,在线模式)│
 └─────────────┘                   └──────────────┘
 ```
+
+主要场景为完全离线的「作者签名 + 买家公钥封装 CEK + 激活码哈希绑定 key_id」，一人一码在密码学层面成立；`server/` 保留为可选的在线激活模式。
 
 ## 目录
 
 | 目录 | 内容 | 平台 |
 |---|---|---|
-| `packager/` | 画师端打包工具（Python，`.vkit` 加密包） | 任意（Linux 已测） |
-| `server/` | 授权服务器（Python 标准库 + SQLite + HMAC 令牌） | 任意（Linux 已测） |
-| `client/` | 买家客户端（Rust：CNG 密钥、Dokan 挂载、VTS 拉起/授权） | Windows 10/11 x64 |
-| `docs/vkit-format.md` | `.vkit` 二进制格式规范 | — |
-| `docs/windows-test-guide.md` | Windows 本机测试指南 | — |
-| `model-lock-security-design.md` | 完整方案设计文档 | — |
+| `packager/` | 画师端打包工具（Python，`.vkit` 加密包） | 任意（Linux 可测） |
+| `server/` | 授权服务器（可选在线模式，Python 标准库 + SQLite） | 任意 |
+| `client/` | 买家客户端核心（Rust：CNG 密钥、Dokan 挂载、VTS 拉起/授权） | **仅 Windows 10/11 x64** |
+| `client-ui/` | 买家端 GUI（Rust + egui） | **仅 Windows 10/11 x64** |
+| `artist-ui/` | 画师端 GUI（Python + PySide6） | Windows（打包工具本身任意平台） |
+| `docs/` | `.vkit` 格式规范、Windows 测试指南 | — |
 
-Windows 客户端实测步骤见 [docs/windows-test-guide.md](docs/windows-test-guide.md)。
+## 开发构建
 
-## 快速开始（Linux 上可完整验证的部分）
+```powershell
+# 买家端（需要 Rust MSVC 工具链；图标/Logo 经 build.rs 内嵌）
+cd client-ui
+cargo build --release
 
-依赖：Python 3.10+，`pip install cryptography`（测试不需要额外包）。
+# 画师端（需要 Python 3.10+、PySide6、cryptography、pyinstaller）
+cd ..
+python -m pip install PySide6 cryptography pyinstaller pillow
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name ModelLockArtist `
+  --paths . --add-data "docs/logo.png;docs" --icon "packaging/icon.ico" artist-ui/main.py
+```
+
+安装包：用 Inno Setup 编译 `packaging/ModelLockClient.iss` / `packaging/ModelLockArtist.iss`（买家端安装包会内置 Dokan v2 运行时）。
+
+测试（打包器 + 服务器单元测试与端到端流程，Linux 亦可跑）：
 
 ```bash
-# 1. 打包工具 + 服务器单元测试
 python3 -m unittest packager.tests.test_vkit server.tests.test_server -v
-
-# 2. 端到端：发码 → 买家激活 → 打包 → 解密还原
 python3 tests/e2e.py
 ```
 
-## 离线验证模式（推荐，无需服务器）
+## 致谢与许可
 
-1. 画师生成作者密钥并导出公钥文件：
-   ```bash
-   python3 -m packager.cli gen-key --output author.pem
-   python3 -m packager.cli export-author-key --key author.pem --output author.spki
-   ```
-2. 买家运行客户端 `init` 导出 `.vreq` 发给画师；
-3. 画师为该买家发激活码（本地台账，绑定买家 key_id）：
-   ```bash
-   python3 -m packager.cli gen-code --model-id 小樱 --key-id <买家key_id> --note 阿花
-   ```
-4. 画师打包（许可声明随包签名）：
-   ```bash
-   python3 -m packager.cli pack --model-dir 模型目录 --vreq 买家.vreq \
-     --output 小樱-阿花.vkit --author-key author.pem --code ML-XXXX --expires 2027-12-31
-   ```
-5. 买家首次使用：`trust-author --file author.spki`，然后 `mount --vkit 小樱-阿花.vkit --code ML-XXXX`；
-   之后同一模型再次 mount 不再需要输码（本地已缓存许可）。
-
-> 全程无服务器参与：作者签名 + 买家公钥封装 CEK + 激活码哈希绑定 key_id，
-> “一人一码”在密码学层面成立。原 server/ 目录保留为可选的在线模式。
-
-## 端到端流程
-
-1. 买家运行客户端 `init --vreq-out VVON-授权请求.vreq`，导出公钥请求文件；
-2. 画师运行 `python3 -m packager.cli pack --model-dir 模型目录 --vreq 买家.vreq --output 模型-买家.vkit --author-key author.pem`；
-3. 服务器管理员生成激活码：`POST /api/admin/codes`（见 `server/server.py` 或测试）；
-4. 买家输入激活码：`modelock-client activate --server http://127.0.0.1:8787 --code ML-XXXX`；
-5. 买家加载：`modelock-client mount --vkit 模型-买家.vkit`，客户端挂载虚拟盘、拉起 VTS、只授权这个 VTS 实例读取；卸载即杀 VTS。
-
-## Windows 客户端编译与运行
-
-```powershell
-# 前提：Rust MSVC 工具链、Dokan SDK（https://dokan-dev.github.io）
-cd client
-cargo build --release
-
-# 首次使用：生成设备密钥（CNG/KSP，私钥不可导出）并导出请求文件
-target\release\modelock-client.exe init --vreq-out 授权请求.vreq
-
-# 激活（把请求文件发给画师，等 .vkit 回来）
-target\release\modelock-client.exe activate --server http://你的服务器:8787 --code ML-XXXX
-
-# 挂载并启动 VTS
-target\release\modelock-client.exe mount --vkit 模型-买家.vkit
-```
-
-> VTS 只通过 Steam 分发。客户端**强制走 Steam 启动**：调用 `steam.exe -applaunch 1325860`，
-> 然后轮询监听新出现的 `VTube Studio.exe` 进程，仅当它的父进程是 `steam.exe` 时才授权挂载
-> （手动双击或 `-nosteam` 直启的实例不会被授权）。VNet 等 Steam 功能因此保持可用。
-> 开发调试可用 `--launch-mode nosteam` 直启。
-
-## 安全边界（务必阅读）
-
-- 本实现的目标是抬高门槛：防随手转发（`.vkit` 绑定买家公钥，转发无效）、防扒包工具（读取预算 + 目录枚举拒绝）、防共享激活码（服务端绑定设备）。
-- 无法防住“完全控制本机”的专业攻击者：模型渲染时内存/显存中必然存在明文。
-- 客户端（`client/`）需在 Windows 上编译与实测；本仓库在 Linux 环境完成了打包器、服务器和端到端流程的验证。
+- 本项目参考了 [BarryWangQwQ/ProjectVFS](https://github.com/BarryWangQwQ/ProjectVFS)（基于 Windows Dokan 的虚拟文件系统）的设计思路，特此致谢。
+- 软件源码以 [MIT 许可证](LICENSE) 发布，Copyright (c) 2026 古守の香香G（bilibili@古守の香香G）。
+- 授权服务与模型内容（激活码、加密 `.vkit` 包）为作者独立提供的服务，适用「关于」对话框中的使用条款：激活码与设备绑定，禁止转售/共享；禁止逆向、破解或绕过授权机制；禁止将解密后的模型重新打包、传播或商用；禁止转售本软件；不得用于任何违法违规用途。
