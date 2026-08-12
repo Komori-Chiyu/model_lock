@@ -112,6 +112,85 @@ impl MountHandle {
     }
 }
 
+/// Trusted date sources: any HTTPS response's `Date` header carries the
+/// server's UTC time, and TLS makes the response tamper-resistant. Several
+/// well-known hosts are tried because any single one may be unreachable.
+const TIME_SOURCES: [&str; 3] = [
+    "https://www.baidu.com/",
+    "https://www.qq.com/",
+    "https://www.apple.com.cn/",
+];
+
+/// Parse an RFC 7231 date ("Tue, 11 Aug 2026 14:30:00 GMT") into YYYY-MM-DD.
+fn parse_http_date(s: &str) -> Option<String> {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    let day: u32 = parts[1].trim_end_matches(',').parse().ok()?;
+    let month = match parts[2].to_ascii_lowercase().as_str() {
+        "jan" => 1,
+        "feb" => 2,
+        "mar" => 3,
+        "apr" => 4,
+        "may" => 5,
+        "jun" => 6,
+        "jul" => 7,
+        "aug" => 8,
+        "sep" => 9,
+        "oct" => 10,
+        "nov" => 11,
+        "dec" => 12,
+        _ => return None,
+    };
+    let year: u32 = parts[3].parse().ok()?;
+    if !(1..=31).contains(&day) || year < 2000 || year > 2100 {
+        return None;
+    }
+    Some(format!("{year:04}-{month:02}-{day:02}"))
+}
+
+/// Fetch the trusted current date (UTC, YYYY-MM-DD) from the network. The
+/// system clock is never used for expiry decisions — it can be changed to
+/// dodge expiry, while a TLS-fetched Date header cannot.
+pub fn fetch_network_date() -> Result<String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(5))
+        .build();
+    let mut last_err: Option<String> = None;
+    for url in TIME_SOURCES {
+        match agent.get(url).call() {
+            Ok(resp) => {
+                if let Some(date) = resp.header("date").and_then(parse_http_date) {
+                    log::info!("network date from {url}: {date}");
+                    return Ok(date);
+                }
+                last_err = Some(format!("{url}: no usable Date header"));
+            }
+            Err(e) => {
+                log::warn!("time source {url} failed: {e}");
+                last_err = Some(format!("{url}: {e}"));
+            }
+        }
+    }
+    bail!(
+        "无法获取网络时间(过期校验依赖联网时间): {}",
+        last_err.unwrap_or_default()
+    )
+}
+
+/// Record that a license was verified today (network date). As a backstop
+/// against a misbehaving time source, refuse if the date ever goes backwards.
+fn record_verification_date(state: &mut auth::ClientState, today: &str) -> Result<()> {
+    if let Some(last) = state.last_verified_date.as_deref().filter(|s| !s.is_empty()) {
+        if today < last {
+            bail!("日期异常:从 {last} 倒退到了 {today},请检查网络时间源");
+        }
+    }
+    state.last_verified_date = Some(today.to_string());
+    auth::save_state(state)
+}
+
 /// Verify the offline license and remember the model (idempotent).
 pub fn verify_and_accept(vkit_path: &Path, code: Option<&str>) -> Result<auth::AcceptedLicense> {
     let mut state = auth::load_state()?.unwrap_or_default();
@@ -133,7 +212,8 @@ pub fn verify_and_accept(vkit_path: &Path, code: Option<&str>) -> Result<auth::A
     } else {
         Some(code.context("this package requires an activation code")?)
     };
-    vkit::verify_package_license(&pkg.header, &author_spki, &key.key_id, code)?;
+    let today = fetch_network_date()?;
+    vkit::verify_package_license(&pkg.header, &author_spki, &key.key_id, code, &today)?;
     if code.is_some() {
         auth::accept_license(
             &mut state,
@@ -145,6 +225,7 @@ pub fn verify_and_accept(vkit_path: &Path, code: Option<&str>) -> Result<auth::A
         )?;
         state = auth::load_state()?.unwrap_or_default();
     }
+    record_verification_date(&mut state, &today)?;
     Ok(state
         .accepted_licenses
         .iter()
@@ -184,7 +265,8 @@ pub fn mount_model(vkit_path: &Path, code: Option<&str>, cfg: &MountConfig) -> R
         } else {
             Some(code.context("this package requires an activation code")?)
         };
-        vkit::verify_package_license(&pkg.header, &author_spki, &key.key_id, code)?;
+        let today = fetch_network_date()?;
+        vkit::verify_package_license(&pkg.header, &author_spki, &key.key_id, code, &today)?;
         if code.is_some() {
             auth::accept_license(
                 &mut state,
@@ -195,10 +277,31 @@ pub fn mount_model(vkit_path: &Path, code: Option<&str>, cfg: &MountConfig) -> R
                 &lic.note,
             )?;
         }
-        println!("offline license OK (model {})", pkg.header.model_id);
+        record_verification_date(&mut state, &today)?;
+        println!("offline license OK (model {}, network date {today})", pkg.header.model_id);
     } else {
         log::warn!("package has no offline license; skipping activation check");
     }
+
+    // Steam mode pre-checks BEFORE touching the mount point: a running
+    // "VTube Studio.exe" (real or look-alike) must be closed by the user, and
+    // Steam must be up. Only the VTS instance we launch through Steam right
+    // now is ever authorized to read the volume.
+    let existing_pids = if cfg.launch_mode == LaunchMode::Steam {
+        let existing = vts::collect_vts_pids();
+        if !existing.is_empty() {
+            bail!(
+                "VTube Studio 正在运行（pid {:?}），请先关闭它再挂载",
+                existing.iter().collect::<Vec<_>>()
+            );
+        }
+        if !vts::steam_running() {
+            bail!("Steam 尚未运行，请先打开 Steam 再挂载");
+        }
+        Some(existing)
+    } else {
+        None
+    };
 
     let vts_exe = match &cfg.vts_override {
         Some(p) => p.clone(),
@@ -212,18 +315,56 @@ pub fn mount_model(vkit_path: &Path, code: Option<&str>, cfg: &MountConfig) -> R
         .join("StreamingAssets")
         .join("Live2DModels")
         .join(&model_id);
-    if mount_point.exists() {
-        let non_empty = std::fs::read_dir(&mount_point)?.next().is_some();
+    let mount_point_str = mount_point.to_string_lossy().to_string();
+    let mount_point_w = U16CString::from_str(&mount_point_str)?;
+
+    // Clean up the previous mount before creating ours. A stale Dokan volume
+    // (left behind by a hard-killed client) can own this directory: metadata
+    // reports it as gone while create_dir_all fails with ERROR_ALREADY_EXISTS
+    // (os error 183). Metadata is therefore not a reliable signal — drive the
+    // cleanup by actions instead: unmount, try to rebuild the mount point,
+    // and retry while the driver finishes detaching the stale volume.
+    let mut created = false;
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 0..10 {
+        let _ = dokan::unmount(&mount_point_w);
+        // Ignore read/remove errors here: a stale volume can make them fail
+        // even though the directory is empty. Only a real non-empty conflict
+        // (a genuine model directory) aborts.
+        let non_empty = std::fs::read_dir(&mount_point)
+            .ok()
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
         if non_empty {
             bail!("mount directory already exists and is not empty: {}", mount_point.display());
         }
-        std::fs::remove_dir(&mount_point)?;
+        let _ = std::fs::remove_dir(&mount_point);
+        match std::fs::create_dir_all(&mount_point) {
+            Ok(()) => {
+                log::info!("mount point ready (attempt {attempt})");
+                created = true;
+                break;
+            }
+            Err(e) => {
+                log::warn!("mount point create attempt {attempt} failed: {e}");
+                last_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
     }
-    std::fs::create_dir_all(&mount_point)?;
+    if !created {
+        return Err(last_err.map(anyhow::Error::from).unwrap_or_else(|| {
+            anyhow::anyhow!("cannot create mount point {}", mount_point.display())
+        }))
+        .with_context(|| {
+            format!(
+                "stale virtual volume at {} did not detach; close other ModelLock clients and retry, or reboot",
+                mount_point.display()
+            )
+        });
+    }
 
     let fs = Arc::new(vfs::ModelFs::new(pkg));
-    let mount_point_str = mount_point.to_string_lossy().to_string();
-    let mount_point_w = U16CString::from_str(&mount_point_str)?;
 
     let mount_fs = fs.clone();
     let mount_mp = mount_point_w.clone();
@@ -250,7 +391,7 @@ pub fn mount_model(vkit_path: &Path, code: Option<&str>, cfg: &MountConfig) -> R
             vts::launch_vts_nosteam(&vts_exe, cfg.kill_vts_on_unmount)?
         }
         LaunchMode::Steam => {
-            let existing = vts::collect_vts_pids();
+            let existing = existing_pids.unwrap_or_default();
             vts::request_steam_launch()?;
             println!(
                 "launching VTube Studio via Steam (app {}), waiting...",

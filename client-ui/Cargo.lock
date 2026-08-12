@@ -2420,6 +2420,7 @@ dependencies = [
  "log",
  "modelock-client",
  "rfd",
+ "winapi",
 ]
 
 [[package]]

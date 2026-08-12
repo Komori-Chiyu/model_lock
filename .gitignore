@@ -11,3 +11,18 @@ artist-ui/build/
 artist-ui/dist/
 *.spec
 packaging/output/
+
+# 私钥/密钥文件 — 严禁提交
+*.pem
+*.spki
+# 每台设备的授权请求文件
+*.vreq
+# 调试与临时产物
+*.log
+stderr.txt
+stdout.txt
+steam_appid.txt
+modelock-client.exe
+test_model/
+build/
+dist/

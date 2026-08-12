@@ -18,6 +18,10 @@ pub struct ClientState {
     pub author_spki_b64: String,
     #[serde(default)]
     pub accepted_licenses: Vec<AcceptedLicense>,
+    /// Last UTC date (YYYY-MM-DD) at which a license was verified. Used to
+    /// detect system-clock rollback (setting the clock back to dodge expiry).
+    #[serde(default)]
+    pub last_verified_date: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

@@ -284,11 +284,15 @@ impl Header {
 /// `code` may be `None` when the caller already cached an accepted license for
 /// this package; in that case the code hash check is skipped (signature, key_id
 /// binding and expiry are still verified).
+///
+/// `today` is the trusted date (YYYY-MM-DD, UTC) fetched from the network —
+/// the system clock is never used for expiry decisions.
 pub fn verify_package_license(
     header: &Header,
     author_spki: &[u8],
     device_key_id: &str,
     code: Option<&str>,
+    today: &str,
 ) -> Result<()> {
     let pub_der_b64 = header
         .author_public_key
@@ -327,30 +331,12 @@ pub fn verify_package_license(
             bail!("activation code does not match this license");
         }
     }
-    if let Some(exp) = &lic.expires_at {
-        if today_iso() > *exp {
+    // An empty expires_at means a perpetual license; only enforce a real date.
+    if let Some(exp) = lic.expires_at.as_deref().filter(|s| !s.is_empty()) {
+        if today > exp {
             bail!("license expired on {exp}");
         }
     }
     Ok(())
-}
-
-/// Current UTC date as YYYY-MM-DD (civil-from-days conversion).
-fn today_iso() -> String {
-    let days = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| (d.as_secs() / 86400) as i64)
-        .unwrap_or(0);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
 }
 

@@ -129,7 +129,7 @@ fn process_parent_pid(snap: winapi::um::winnt::HANDLE, pid: u32) -> Option<u32> 
 
 
 /// Full path of a process image via QueryFullProcessImageNameW.
-fn pid_exe_path(pid: u32) -> Option<String> {
+pub fn pid_exe_path(pid: u32) -> Option<String> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if handle.is_null() {
@@ -498,6 +498,35 @@ pub fn launch_vts_nosteam(exe: &Path, kill_on_drop: bool) -> Result<VtsProcess> 
             kill_on_drop: false,
         })
     }
+}
+
+/// True when steam.exe is currently running (mounting requires Steam).
+pub fn steam_running() -> bool {
+    let Some(snap) = process_snapshot() else {
+        return false;
+    };
+    let mut found = false;
+    unsafe {
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snap, &mut entry) != 0 {
+            loop {
+                let name = widestring::U16Str::from_slice(&entry.szExeFile)
+                    .to_string_lossy()
+                    .trim_end_matches('\0')
+                    .to_string();
+                if name.eq_ignore_ascii_case("steam.exe") {
+                    found = true;
+                    break;
+                }
+                if Process32NextW(snap, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+    }
+    found
 }
 
 /// Open a handle to a PID for authorization checks (prevents PID reuse).

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use modelock_client::{self as core, MountConfig, MountHandle};
 
-use crate::app::{AppCore, ModelEntry};
+use modelock_client_ui::app::{AppCore, ModelEntry};
 
 pub struct RealCore {
     handle: Option<MountHandle>,
