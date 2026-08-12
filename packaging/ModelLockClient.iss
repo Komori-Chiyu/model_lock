@@ -1,5 +1,5 @@
-; ModelLock Buyer Client installer
-#define AppName "ModelLock 买家端"
+; 星零集模型锁 buyer client installer
+#define AppName "星零集模型锁"
 #define AppExe "modelock-client-ui.exe"
 
 [Setup]
@@ -7,7 +7,7 @@ AppId={{8A3E2B0D-4C21-4E7F-9A5D-3C9D2B0F0001}}
 AppName={#AppName}
 AppVersion=0.1.0
 DefaultDirName={autopf}\ModelLockClient
-DefaultGroupName=ModelLock
+DefaultGroupName=星零集模型锁
 OutputDir=output
 OutputBaseFilename=ModelLockClient-Setup
 Compression=lzma2
@@ -17,6 +17,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 [Files]
 Source: "..\client-ui\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+; App logo shown in the UI (loaded from exe dir at runtime).
+Source: "..\docs\logo.png"; DestDir: "{app}"; Flags: ignoreversion
 ; Dokan v2 runtime (dokan2.dll + kernel driver): required to mount .vkit volumes.
 Source: "redist\Dokan_x64.msi"; DestDir: "{app}\redist"; Flags: ignoreversion
 

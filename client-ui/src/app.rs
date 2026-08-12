@@ -1,12 +1,24 @@
-//! ModelLock buyer UI (core-agnostic; real core on Windows, mock on Linux preview).
+//! 星零集模型锁 buyer UI (core-agnostic; real core on Windows, mock on Linux preview).
 
 use eframe::egui;
 use std::path::Path;
+
+use crate::logo;
 
 const PINK: egui::Color32 = egui::Color32::from_rgb(255, 205, 220);
 const PURPLE: egui::Color32 = egui::Color32::from_rgb(190, 170, 240);
 const TEXT_DARK: egui::Color32 = egui::Color32::from_rgb(70, 60, 80);
 const OK_GREEN: egui::Color32 = egui::Color32::from_rgb(120, 190, 150);
+
+/// 关于对话框正文（与画师端保持一致）。
+const PROJECTVFS_URL: &str = "https://github.com/BarryWangQwQ/ProjectVFS";
+const TERMS: [&str; 5] = [
+    "激活码与设备绑定，禁止转售、出借或共享；",
+    "禁止对软件、模型文件及授权机制进行反向工程、破解或绕过；",
+    "禁止将解密后的模型文件重新打包、传播或用于商业用途；",
+    "禁止转售或再分发本软件；",
+    "不得将本软件或模型用于任何违法违规用途。",
+];
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum Page {
@@ -47,6 +59,9 @@ pub struct App {
     pending_code: String,
     mounted_model: Option<String>,
     messages: Vec<String>,
+    logo: Option<egui::TextureHandle>,
+    logo_attempted: bool,
+    show_about: bool,
 }
 
 impl App {
@@ -65,6 +80,9 @@ impl App {
             pending_code: String::new(),
             mounted_model,
             messages: Vec::new(),
+            logo: None,
+            logo_attempted: false,
+            show_about: false,
         }
     }
 
@@ -191,8 +209,16 @@ impl App {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.heading("🐱 ModelLock");
-                ui.label("买家端 · demo");
+                if !self.logo_attempted {
+                    self.logo_attempted = true;
+                    self.logo = logo::load_texture(ctx);
+                }
+                if let Some(tex) = &self.logo {
+                    let sized = egui::load::SizedTexture::new(tex.id(), egui::vec2(30.0, 30.0));
+                    ui.add(egui::Image::new(sized));
+                }
+                ui.heading("星零集模型锁");
+                ui.label("买家端");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match &self.mounted_model {
                         Some(m) => {
@@ -240,6 +266,8 @@ impl App {
             Page::Trust => self.ui_trust(ui),
             Page::Settings => self.ui_settings(ui),
         });
+
+        self.ui_about(ctx);
     }
 
     fn ui_library(&mut self, ui: &mut egui::Ui) {
@@ -355,7 +383,36 @@ impl App {
         ui.label("默认关闭：卸载只移除虚拟盘，VTS 继续运行。");
         ui.add_space(10.0);
         ui.separator();
-        ui.label("关于：ModelLock 买家端 demo v0.1");
+        if ui.button("ℹ️ 关于").clicked() {
+            self.show_about = true;
+        }
         ui.label("完全离线授权 · 一人一码 · 模型绑定本机密钥");
+    }
+
+    /// 关于对话框：版权 / 开源许可 / 致谢 / 使用条款。
+    fn ui_about(&mut self, ctx: &egui::Context) {
+        if !self.show_about {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("关于 星零集模型锁")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("星零集模型锁 v0.1").strong().size(15.0));
+                ui.label("© 2026 星零集模型锁 · 由 bilibili@古守の香香G 开发");
+                ui.add_space(4.0);
+                ui.label("软件源码以 MIT 开源协议发布（详见仓库 LICENSE 文件）。");
+                ui.add_space(4.0);
+                ui.label("致谢：本项目参考了 BarryWangQwQ 的开源项目 ProjectVFS 的设计思路，");
+                ui.hyperlink_to(PROJECTVFS_URL, PROJECTVFS_URL);
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("授权服务与模型内容使用条款：").strong());
+                for (i, term) in TERMS.iter().enumerate() {
+                    ui.label(format!("{}. {term}", i + 1));
+                }
+            });
+        self.show_about = open;
     }
 }

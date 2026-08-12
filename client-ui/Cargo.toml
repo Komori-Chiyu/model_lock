@@ -14,14 +14,17 @@ rfd = "0.15"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
+image = "0.25"
 
 [target.'cfg(windows)'.dependencies]
 modelock-client = { path = "../client" }
 winapi = { version = "0.3", features = ["winbase", "synchapi", "winuser", "winerror", "errhandlingapi", "minwindef", "winnt"] }
 
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
 [dev-dependencies]
 egui_kittest = { version = "0.31", features = ["snapshot"] }
-image = "0.25"
 
 [profile.release]
 lto = true

@@ -5,6 +5,7 @@
 
 use eframe::egui;
 use modelock_client_ui::app::{App, AppCore};
+use modelock_client_ui::logo;
 #[cfg(windows)]
 mod core_real;
 #[cfg(not(windows))]
@@ -80,8 +81,8 @@ fn ensure_single_instance() -> bool {
         let name = wide("ModelLockClientSingleton");
         let handle = CreateMutexW(std::ptr::null_mut(), 0, name.as_ptr());
         if handle.is_null() || GetLastError() == ERROR_ALREADY_EXISTS {
-            let title = wide("ModelLock");
-            let msg = wide("ModelLock 客户端已经在运行中。");
+            let title = wide("星零集模型锁");
+            let msg = wide("星零集模型锁 已经在运行中。");
             winapi::um::winuser::MessageBoxW(std::ptr::null_mut(), msg.as_ptr(), title.as_ptr(), 0);
             return false;
         }
@@ -100,12 +101,18 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([960.0, 660.0])
+        .with_title("星零集模型锁");
+    if let Some(icon) = logo::icon_data() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 660.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
-        "ModelLock",
+        "星零集模型锁",
         options,
         Box::new(|cc| {
             install_cjk_fonts(&cc.egui_ctx);

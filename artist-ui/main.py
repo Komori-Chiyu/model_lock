@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ModelLock 画师端 demo（PySide6）：发码 / 打包 / 密钥 / 台账。"""
+"""星零集模型锁-画师端（PySide6）：发码 / 打包 / 密钥 / 台账。"""
 
 import base64
 import csv
@@ -17,12 +17,20 @@ from packager.ledger import Ledger
 from packager.vkit import load_vreq, pack_model
 
 from PySide6.QtCore import QDate, Qt, QSharedMemory
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog, QMessageBox,
     QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QComboBox,
     QGroupBox, QHeaderView, QSpinBox, QCheckBox, QDateEdit,
 )
+
+
+def _resource_path(name: str) -> Path:
+    """资源路径：打包后从 PyInstaller 临时目录取，开发时从仓库取。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / name
+    return Path(__file__).resolve().parent.parent / name
 
 def _expires_from_term(years: int, months: int, perpetual: bool) -> str | None:
     """把「N 年 M 月」换算成到期日(yyyy-MM-dd);永久返回 None。
@@ -86,12 +94,28 @@ QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; color:
 class ArtistApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ModelLock 画师端 · demo")
+        self.setWindowTitle("星零集模型锁-画师端")
         self.resize(960, 680)
         self.author_key: rsa.RSAPrivateKey | None = None
         self.ledger_path = _default_ledger_path()
         self.ledger = Ledger(self.ledger_path)
         self.current_vreq = None
+
+        logo_path = _resource_path("docs/logo.png")
+        logo = QLabel()
+        logo.setPixmap(QPixmap(str(logo_path)).scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        logo.setFixedSize(28, 28)
+        title = QLabel("星零集模型锁-画师端")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #463c50;")
+        about_btn = QPushButton("ℹ️ 关于")
+        about_btn.clicked.connect(self.show_about)
+        header = QWidget()
+        hlay = QHBoxLayout(header)
+        hlay.setContentsMargins(4, 0, 4, 0)
+        hlay.addWidget(logo)
+        hlay.addWidget(title)
+        hlay.addStretch(1)
+        hlay.addWidget(about_btn)
 
         tabs = QTabWidget()
         tabs.addTab(self._tab_keys(), "🔑 作者密钥")
@@ -105,11 +129,13 @@ class ArtistApp(QMainWindow):
 
         central = QWidget()
         lay = QVBoxLayout(central)
+        lay.addWidget(header)
         lay.addWidget(tabs)
         lay.addWidget(QLabel("日志"))
         lay.addWidget(self.log_box)
         self.setCentralWidget(central)
-        self.log("欢迎使用 ModelLock 画师端 demo（完全离线）")
+        self.setWindowIcon(QIcon(str(logo_path)))
+        self.log("欢迎使用 星零集模型锁-画师端（完全离线）")
         self.log(f"台账: {self.ledger_path}")
 
     # ---------- helpers ----------
@@ -121,6 +147,27 @@ class ArtistApp(QMainWindow):
 
     def warn(self, title, msg):
         QMessageBox.warning(self, title, msg)
+
+    def show_about(self):
+        """关于对话框：版权 / 开源许可 / 致谢 / 使用条款（与买家端一致）。"""
+        terms = [
+            "激活码与设备绑定，禁止转售、出借或共享；",
+            "禁止对软件、模型文件及授权机制进行反向工程、破解或绕过；",
+            "禁止将解密后的模型文件重新打包、传播或用于商业用途；",
+            "禁止转售或再分发本软件；",
+            "不得将本软件或模型用于任何违法违规用途。",
+        ]
+        text = (
+            "<h3>星零集模型锁-画师端 v0.1</h3>"
+            "<p>© 2026 星零集模型锁 · 由 <b>bilibili@古守の香香G</b> 开发</p>"
+            "<p>软件源码以 <b>MIT 开源协议</b>发布（详见仓库 LICENSE 文件）。</p>"
+            "<p>致谢：本项目参考了 BarryWangQwQ 的开源项目 "
+            '<a href="https://github.com/BarryWangQwQ/ProjectVFS">ProjectVFS</a>'
+            " 的设计思路。</p>"
+            "<p><b>授权服务与模型内容使用条款：</b></p>"
+            "<p>" + "<br>".join(f"{i + 1}. {t}" for i, t in enumerate(terms)) + "</p>"
+        )
+        QMessageBox.about(self, "关于 星零集模型锁-画师端", text)
 
     def gen_author_key(self):
         try:
@@ -431,7 +478,7 @@ def main():
     # 单实例:第二个实例直接提示并退出(进程退出时系统自动释放锁)。
     lock = QSharedMemory("ModelLockArtistSingleton")
     if not lock.create(1):
-        QMessageBox.critical(None, "ModelLock 画师端", "ModelLock 画师端已经在运行中。")
+        QMessageBox.critical(None, "星零集模型锁-画师端", "星零集模型锁-画师端 已经在运行中。")
         return 1
 
     win = ArtistApp()

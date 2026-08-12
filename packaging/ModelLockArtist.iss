@@ -1,5 +1,5 @@
-; ModelLock Artist Tool installer
-#define AppName "ModelLock 画师端"
+; 星零集模型锁-画师端 installer
+#define AppName "星零集模型锁-画师端"
 #define AppExe "ModelLockArtist.exe"
 
 [Setup]
@@ -7,7 +7,7 @@ AppId={{8A3E2B0D-4C21-4E7F-9A5D-3C9D2B0F0002}}
 AppName={#AppName}
 AppVersion=0.1.0
 DefaultDirName={autopf}\ModelLockArtist
-DefaultGroupName=ModelLock
+DefaultGroupName=星零集模型锁
 OutputDir=output
 OutputBaseFilename=ModelLockArtist-Setup
 Compression=lzma2
